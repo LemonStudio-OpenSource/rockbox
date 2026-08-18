@@ -6,7 +6,7 @@
  *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
  *                     \/            \/     \/    \/            \/
  *
- * Simple Metronome with logging (fixed for compilation)
+ * Simple Metronome with fixed log file (no RTC dependency)
  * - 60 BPM, 1000 Hz square wave, -20 dB
  * - Uses mixer channel, does NOT stop music
  * - Logs to /metronome/metronome.log (appended)
@@ -79,22 +79,8 @@ static void log_init(void)
     const char *logpath = "/metronome/metronome.log";
     log_fd = rb->open(logpath, O_RDWR | O_CREAT | O_APPEND, 0666);
     if (log_fd >= 0) {
-        start_tick = *rb->current_tick;   /* record start tick */
+        start_tick = *rb->current_tick;
         log_message("PLUGIN START SUCCESSFULLY");
-
-        /* try to get absolute time (if available), but don't crash if not */
-        struct tm tm;
-        if (rb->rtc_read_datetime) {   /* check if function exists */
-            rb->rtc_read_datetime(&tm);
-            char datebuf[32];
-            rb->snprintf(datebuf, sizeof(datebuf),
-                         "[%04d-%02d-%02d %02d:%02d:%02d]",
-                         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                         tm.tm_hour, tm.tm_min, tm.tm_sec);
-            log_message("Absolute start time: %s", datebuf);
-        } else {
-            log_message("RTC not available, absolute time unknown");
-        }
     } else {
         rb->splash(HZ, "Log open failed");
     }

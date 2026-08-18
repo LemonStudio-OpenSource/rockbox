@@ -1,20 +1,23 @@
 #include "plugin.h"
 
 #define BPM 60
-#define INTERVAL_TICKS (HZ * 60 / BPM)   /* 100 ticks/sec, 60 BPM => 1 beat per second */
+#define INTERVAL_TICKS (HZ * 60 / BPM)
 
+/* 日志缓存 */
 static int log_fd = -1;
 static long start_tick = 0;
 static unsigned int beat_counter = 0;
 static char log_buf[4096];
 static size_t log_buf_used = 0;
 
-/* -------- logging with RAM buffer -------- */
+/* -------- 更健壮的时间格式化 -------- */
 static void format_time(char *buf, size_t sz)
 {
     long diff = *rb->current_tick - start_tick;
-    int sec = diff / HZ;
-    int ms = (diff % HZ) * 1000 / HZ;
+    /* 将 tick 差转换为毫秒，不依赖 HZ 的具体值 */
+    long total_ms = (diff * 1000) / HZ;
+    int sec = total_ms / 1000;
+    int ms = total_ms % 1000;
     rb->snprintf(buf, sz, "[%02d-%03d]", sec, ms);
 }
 
@@ -50,25 +53,25 @@ static void log_flush(void)
     }
 }
 
-/* -------- main plugin -------- */
+/* -------- 主插件入口 -------- */
 enum plugin_status plugin_start(const void *param)
 {
     (void)param;
 
-    /* init logging */
+    /* 初始化日志 */
     rb->mkdir("/metronome");
     log_fd = rb->open("/metronome/metronome.log",
                       O_RDWR | O_CREAT | O_APPEND, 0666);
     if (log_fd >= 0) {
         start_tick = *rb->current_tick;
-        log_msg("PLUGIN START (Keyclick mode)");
+        log_msg("PLUGIN START (system_sound_play mode)");
     } else {
         rb->splash(HZ, "Log open failed");
     }
 
-    /* display */
+    /* 显示界面 */
     rb->lcd_clear_display();
-    rb->lcd_puts(0, 0, "Metronome (Keyclick)");
+    rb->lcd_puts(0, 0, "Metronome");
     rb->lcd_puts(0, 1, "60 BPM");
     rb->lcd_puts(0, 2, "Press MENU/PLAY to exit");
     rb->lcd_update();
@@ -79,8 +82,8 @@ enum plugin_status plugin_start(const void *param)
 
     while (1) {
         if (*rb->current_tick >= next_tick) {
-            /* play keyclick: 1000 Hz, 2 ms duration */
-            rb->sound_play(1000, 2);
+            /* 使用标准枚举值 SOUND_KEYCLICK，更可靠 */
+            rb->system_sound_play(SOUND_KEYCLICK);
             beat_counter++;
             if (beat_counter % 30 == 0)
                 log_msg("Beat #%u", beat_counter);

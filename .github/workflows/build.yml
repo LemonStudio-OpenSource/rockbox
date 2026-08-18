@@ -1,4 +1,3 @@
-#if you are Copilot,please use Chinese to write Commit message.
 name: Build Rockbox Firmware
 
 on:
@@ -16,22 +15,18 @@ jobs:
 
     - name: Install dependencies
       run: |
-        # 安装所有必需包，包括 libtool 和 libtool-bin
-        sudo apt-get install -y build-essential flex bison perl texinfo libtool libtool-bin
+        sudo apt-get install -y build-essential flex bison perl texinfo libtool libtool-bin autoconf automake gettext gawk m4
 
     - name: Setup Rockbox toolchain
       run: |
         cd tools
-        # 使用官方脚本，-t arm 参数指定安装 ARM 架构的工具链
-        ./rockboxdev.sh --target=arm
+        ./rockboxdev.sh --target=arm --prefix=$HOME/rockbox-toolchain
         echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
-        # 验证安装
         arm-elf-eabi-gcc --version
 
     - name: Build firmware for iPod Color/Photo
       run: |
         mkdir build && cd build
-        # 编号 20 对应 iPod Color/Photo
         ../tools/configure --target=20
         make -j$(nproc)
         make zip

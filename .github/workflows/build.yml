@@ -10,34 +10,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get install -y build-essential flex bison perl texinfo libtool libtool-bin autoconf automake gettext gawk m4
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            build-essential \
+            flex bison perl texinfo \
+            libtool libtool-bin \
+            autoconf automake gettext gawk m4
 
-    - name: Setup Rockbox toolchain
-      run: |
-        cd tools
-        # 参数说明：
-        # --target=a  -> 表示 ARM 架构（iPod 属于 ARM，单字母 a 是脚本规定的写法）
-        # --prefix=$HOME/rockbox-toolchain -> 安装到用户目录，避免权限问题
-        ./rockboxdev.sh --target=a --prefix=$HOME/rockbox-toolchain
-        echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
-        # 验证安装
-        arm-elf-eabi-gcc --version
+      - name: Setup Rockbox toolchain (ARM)
+        run: |
+          cd tools
+          # --target=a 表示 ARM 架构（iPod 属于 ARM）
+          # --prefix=$HOME/rockbox-toolchain 安装到用户目录，避免权限问题
+          ./rockboxdev.sh --target=a --prefix=$HOME/rockbox-toolchain
+          # 将工具链路径加入 PATH，供后续步骤使用
+          echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
 
-    - name: Build firmware for iPod Color/Photo
-      run: |
-        mkdir build && cd build
-        # --target=20 对应 iPod Color/Photo
-        ../tools/configure --target=20
-        make -j$(nproc)
-        make zip
+      - name: Verify toolchain
+        run: |
+          # 这一步 PATH 已包含工具链，验证安装
+          arm-elf-eabi-gcc --version
 
-    - name: Upload firmware artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: rockbox-firmware-ipodcolor
-        path: build/rockbox.zip
+      - name: Build firmware for iPod Color/Photo
+        run: |
+          # 双重保险：显式将工具链加入 PATH（即使上一步未生效也不怕）
+          export PATH="$HOME/rockbox-toolchain/bin:$PATH"
+          mkdir -p build && cd build
+          # --target=20 对应 iPod Color/Photo
+          ../tools/configure --target=20
+          make -j$(nproc)
+          make zip
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rockbox-firmware-ipodcolor
+          path: build/rockbox.zip

@@ -21,7 +21,8 @@
 #include "plugin.h"
 #include <stdarg.h>
 
-PLUGIN_HEADER
+/* 由 plugin_crt0.o 提供，不要定义 PLUGIN_HEADER */
+extern const struct plugin_api *rb;
 
 /* ========== 路径常量 ========== */
 #define METRONOME_DIR       "/metronome"

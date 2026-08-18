@@ -46,7 +46,7 @@ jobs:
         # 运行配置脚本。你需要根据你的设备选择对应的数字[reference:10]
         # 例如，为 Sansa Clip Zip 选择对应数字，这里以 44 为例，请查阅官方文档确认[reference:11]
         # 你也可以使用 --target 参数来避免交互，例如: ../tools/configure --target=20
-        ../tools/configure
+        ../tools/configure --target=20
         
         # 开始编译。使用 -j$(nproc) 可以启用多核加速[reference:12]
         make -j$(nproc)

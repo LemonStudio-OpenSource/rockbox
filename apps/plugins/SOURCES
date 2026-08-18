@@ -240,3 +240,4 @@ test_touchscreen.c
 test_usb.c
 test_viewports.c
 #endif /* HAVE_TEST_PLUGINS */
+ebook.c

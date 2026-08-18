@@ -20,11 +20,11 @@ jobs:
       run: |
         sudo apt-get update
         # 安装编译必需的软件包，flex 是重点，缺失会导致失败[reference:4]
-        sudo apt-get install -y build-essential flex bison perl texinfo libtool autoconf automake
+        sudo apt-get install -y build-essential flex bison perl texinfo autoconf automake gettext gawk m4
         
-    - name: Install libtool
+    - name: Install libtool and libtool-bin
       run: |
-        sudo apt-get install libtool
+        sudo apt-get install -y libtool libtool-bin
         
     # 3. 安装交叉编译工具链（关键步骤）
     - name: Setup Rockbox toolchain

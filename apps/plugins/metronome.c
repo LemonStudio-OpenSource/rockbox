@@ -6,14 +6,13 @@
  *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
  *                     \/            \/     \/    \/            \/
  *
- * Simple Metronome – Exclusive PCM mode (Final)
+ * Simple Metronome – Using Official Mixer API
  * - Scroll wheel adjusts BPM, Select toggles play/pause
  * - Generates 1000 Hz square wave
  * - Logs to /metronome/metronome.log
  ***************************************************************************/
 
 #include "plugin.h"
-#include "lib/pluginlib_actions.h"
 
 /* -------- Audio parameters -------- */
 #define SAMPLE_RATE     44100
@@ -44,7 +43,7 @@ static unsigned int beat_counter = 0;
 static char log_buf[LOG_BUF_SIZE];
 static size_t log_buf_used = 0;
 
-/* -------- Logging helpers -------- */
+/* -------- Logging helpers (renamed to avoid conflict) -------- */
 static void log_format_time(char *buf, size_t sz)
 {
     long diff = *rb->current_tick - start_tick;
@@ -92,7 +91,7 @@ static void log_init(void)
     log_fd = rb->open(LOG_PATH, O_RDWR | O_CREAT | O_APPEND, 0666);
     if (log_fd >= 0) {
         start_tick = *rb->current_tick;
-        log_msg("PLUGIN START (exclusive PCM mode)");
+        log_msg("PLUGIN START (Mixer API mode)");
     } else {
         rb->splash(HZ, "Log open failed");
     }
@@ -112,23 +111,13 @@ static void generate_beep(void)
     }
 }
 
-/* -------- PCM callback -------- 
- * This callback is required by pcm_play_data for continuous playback.
- * For a single clip, it can be NULL, but we keep it for flexibility.
- */
-static void pcm_callback(unsigned char **start, size_t *size)
-{
-    (void)start;
-    (void)size;
-    /* Do nothing for single clip playback */
-}
-
-/* Trigger one beat */
+/* Trigger one beat using the Mixer API */
 static void play_beat(void)
 {
     if (!playing) return;
-    /* Correct API: rb->pcm_play_data(callback, start, size) */
-    rb->pcm_play_data(pcm_callback, (unsigned char *)pcm_buffer, PCM_BUF_SIZE);
+    /* 使用官方 mixer API */
+    rb->mixer_channel_play_data(PCM_MIXER_CHAN_PLAYBACK, NULL,
+                                pcm_buffer, PCM_BUF_SIZE);
 }
 
 /* -------- Volume helpers -------- */
@@ -189,13 +178,13 @@ enum plugin_status plugin_start(const void *param)
             next_tick += (HZ * 60) / bpm;
         }
 
-        /* Button handling using pluginlib actions for better compatibility */
-        int btn = pluginlib_getaction(TIMEOUT_NOBLOCK, NULL, 0);
+        /* Button handling */
+        int btn = rb->button_get_w_tmo(0);
 
         switch (btn) {
             /* Scroll wheel: adjust BPM */
-            case PLA_SCROLL_FWD:
-            case PLA_SCROLL_FWD_REPEAT:
+            case BUTTON_SCROLL_FWD:
+            case BUTTON_SCROLL_FWD | BUTTON_REPEAT:
                 if (bpm < MAX_BPM) {
                     bpm++;
                     update_display();
@@ -203,8 +192,8 @@ enum plugin_status plugin_start(const void *param)
                 }
                 break;
 
-            case PLA_SCROLL_BACK:
-            case PLA_SCROLL_BACK_REPEAT:
+            case BUTTON_SCROLL_BACK:
+            case BUTTON_SCROLL_BACK | BUTTON_REPEAT:
                 if (bpm > MIN_BPM) {
                     bpm--;
                     update_display();
@@ -213,22 +202,23 @@ enum plugin_status plugin_start(const void *param)
                 break;
 
             /* Toggle play/pause */
-            case PLA_SELECT:
-            case PLA_SELECT_REPEAT:
+            case BUTTON_SELECT:
+            case BUTTON_PLAY:
                 playing = !playing;
                 if (playing) {
                     next_tick = *rb->current_tick + (HZ * 60) / bpm;
                     beat_counter = 0;
                     log_msg("Started");
                 } else {
-                    rb->pcm_play_stop();
+                    /* 停止混音器通道播放 */
+                    rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
                     log_msg("Stopped");
                 }
                 update_display();
                 break;
 
             /* Exit */
-            case PLA_EXIT:
+            case BUTTON_MENU:
                 log_msg("Exit requested");
                 goto exit_loop;
 
@@ -241,9 +231,8 @@ enum plugin_status plugin_start(const void *param)
 
 exit_loop:
     /* Cleanup */
-    if (playing)
-        rb->pcm_play_stop();
-
+    /* 停止混音器通道播放并恢复音量 */
+    rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
     set_volume(orig_volume);
 
     log_msg("PLUGIN EXIT (total beats: %u)", beat_counter);

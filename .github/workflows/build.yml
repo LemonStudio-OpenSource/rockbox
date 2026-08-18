@@ -19,15 +19,14 @@ jobs:
         # 安装所有必需包，包括 libtool 和 libtool-bin
         sudo apt-get install -y build-essential flex bison perl texinfo libtool libtool-bin
 
-    - name: Download and setup prebuilt toolchain (Official)
+    - name: Setup Rockbox toolchain
       run: |
-        # 直接从官方下载预编译的 ARM 工具链
-        wget -q https://download.rockbox.org/toolchain/rockbox-dev-gcc-10.3.0-arm-elf-eabi.tar.bz2
-        mkdir -p $HOME/rockbox-toolchain
-        tar -xjf rockbox-dev-gcc-10.3.0-arm-elf-eabi.tar.bz2 -C $HOME/rockbox-toolchain --strip-components=1
+        cd tools
+        # 使用官方脚本，-t arm 参数指定安装 ARM 架构的工具链
+        ./rockboxdev.sh -t arm
         echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
-        # 验证编译器可用
-        $HOME/rockbox-toolchain/bin/arm-elf-eabi-gcc --version
+        # 验证安装
+        arm-elf-eabi-gcc --version
 
     - name: Build firmware for iPod Color/Photo
       run: |

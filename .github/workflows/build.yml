@@ -20,36 +20,40 @@ jobs:
           path: |
             $HOME/rockbox-toolchain
             /tmp/rbdev-dl
-          # 缓存键：工具链版本 + 补丁文件哈希，保证内容变化时自动重建缓存
           key: ${{ runner.os }}-rockbox-toolchain-arm-${{ hashFiles('tools/rockboxdev.sh', 'tools/toolchain-patches/*') }}
           restore-keys: |
             ${{ runner.os }}-rockbox-toolchain-arm-
 
       - name: Install dependencies
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
+          sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             flex bison perl texinfo \
             libtool libtool-bin \
             autoconf automake gettext gawk m4
 
-      - name: Setup Rockbox toolchain
+      - name: Setup Rockbox toolchain (only if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cd tools
           ./rockboxdev.sh --target=a --prefix=$HOME/rockbox-toolchain
-          echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
+          # 不需要在这里加 PATH，后续步骤统一处理
 
-      - name: Add toolchain to PATH (always)
+      # ⚠️ 关键：单独设置 PATH，对后续所有步骤生效
+      - name: Add toolchain to PATH
         run: |
           echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
 
+      # ✅ 现在 PATH 已包含工具链，验证一定能找到
       - name: Verify toolchain
         run: |
           arm-elf-eabi-gcc --version
 
       - name: Build firmware for iPod Color/Photo
         run: |
+          # 双重保险：当前 shell 立即生效
           export PATH="$HOME/rockbox-toolchain/bin:$PATH"
           mkdir -p build && cd build
           ../tools/configure --target=20

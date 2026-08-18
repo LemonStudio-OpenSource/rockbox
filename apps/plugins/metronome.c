@@ -6,15 +6,14 @@
  *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
  *                     \/            \/     \/    \/            \/
  *
- * Simplified Metronome – based on official source, only simple mode
- * - Scroll wheel adjusts BPM, UP/DOWN adjust volume
- * - MENU exits, PLAY/SELECT toggles start/stop
- * - Audio playback using official mixer API (proven to work)
+ * Simplified Metronome – Direct Button Reading (iPod Color)
+ * - Scroll wheel adjusts BPM
+ * - UP/DOWN adjust volume
+ * - SELECT toggles start/stop
+ * - MENU exits
  ***************************************************************************/
 
 #include "plugin.h"
-#include "lib/pluginlib_actions.h"
-#include "lib/pluginlib_exit.h"
 
 /* ========== OFFICIAL PCM DATA (tick_sound) ========== */
 static signed short tick_sound[] =
@@ -208,7 +207,6 @@ static signed short tick_sound[] =
 ,3,-3
 };
 
-/* ========== OFFICIAL PCM DATA (tock_sound) ========== */
 static signed short tock_sound[] =
 {
  32767,32761,32767,32762,32767,32763,32767,32765,32767,32767,32766
@@ -400,30 +398,13 @@ static signed short tock_sound[] =
 ,-2,3
 };
 
-/* ========== AUDIO SETTINGS (copied from official) ========== */
+/* ========== AUDIO SETTINGS ========== */
 #if defined(SIMULATOR)
 static const unsigned int timerfreq_div = 1024;
 #else
 static const unsigned int timerfreq_div = 500; /* 2 ms resolution */
 #endif
 static const unsigned int blinklimit = 135;
-
-/* ========== KEY MAPPING (swapped for your request) ========== */
-/* Scroll wheel adjusts BPM, UP/DOWN adjust volume, MENU exits, PLAY/PAUSE toggles */
-#define METRONOME_VOL_UP        PLA_UP
-#define METRONOME_VOL_UP_REP    PLA_UP_REPEAT
-#define METRONOME_VOL_DOWN      PLA_DOWN
-#define METRONOME_VOL_DOWN_REP  PLA_DOWN_REPEAT
-
-#define METRONOME_LEFT          PLA_SCROLL_FWD
-#define METRONOME_LEFT_REP      PLA_SCROLL_FWD_REPEAT
-#define METRONOME_RIGHT         PLA_SCROLL_BACK
-#define METRONOME_RIGHT_REP     PLA_SCROLL_BACK_REPEAT
-
-#define METRONOME_TAP           PLA_SELECT_REL
-#define METRONOME_PAUSE         PLA_SELECT       /* SELECT button stops */
-#define METRONOME_PLAY          PLA_SELECT_REPEAT/* long SELECT starts */
-#define METRONOME_QUIT          PLA_EXIT        /* MENU button */
 
 /* ========== GLOBAL STATE ========== */
 static int fd = -1;
@@ -442,7 +423,7 @@ static int bpm_step_counter = 0;
 static short tick_buf[sizeof(tick_sound)*2];
 static short tock_buf[sizeof(tock_sound)*2];
 
-/* ========== FUNCTIONS (copied from official) ========== */
+/* ========== FUNCTIONS ========== */
 static void prepare_buffers(void)
 {
     size_t i;
@@ -613,8 +594,8 @@ enum plugin_status plugin_start(const void* file)
     calc_period();
     draw_display();
 
-    int button, last_button = BUTTON_NONE;
-    bool common_action;
+    int btn;
+    bool running = false;
 
     while (true)
     {
@@ -624,51 +605,73 @@ enum plugin_status plugin_start(const void* file)
             play_ticktock();
         }
 
-        button = pluginlib_getaction(TIMEOUT_NOBLOCK, NULL, 0);
-        common_action = false;
+        /* 直接读取原始按键 */
+        btn = rb->button_get_w_tmo(0);
 
-        switch (button)
+        /* 处理按键（不区分按下/释放，只检测动作） */
+        if (btn != BUTTON_NONE)
         {
-            case METRONOME_PLAY:  /* long SELECT */
-                if (sound_paused) metronome_unpause();
-                else              metronome_pause();
-                break;
-            case METRONOME_PAUSE: /* short SELECT */
-                if (!sound_paused) metronome_pause();
-                break;
-            case METRONOME_LEFT:
-                bpm_step_counter = 0;
-                /* fallthrough */
-            case METRONOME_LEFT_REP:
-                change_bpm(-1);
-                break;
-            case METRONOME_RIGHT:
-                bpm_step_counter = 0;
-                /* fallthrough */
-            case METRONOME_RIGHT_REP:
-                change_bpm(1);
-                break;
-            case METRONOME_VOL_UP:
-            case METRONOME_VOL_UP_REP:
+            /* 滚轮调节 BPM */
+            if (btn & BUTTON_SCROLL_FWD)
+            {
+                if (bpm < 400) {
+                    bpm++;
+                    calc_period();
+                    trigger_display(0);
+                }
+            }
+            else if (btn & BUTTON_SCROLL_BACK)
+            {
+                if (bpm > 1) {
+                    bpm--;
+                    calc_period();
+                    trigger_display(0);
+                }
+            }
+            /* 方向键（或触摸滑动）调节音量 */
+            else if (btn & BUTTON_UP)
+            {
                 change_volume(1);
-                break;
-            case METRONOME_VOL_DOWN:
-            case METRONOME_VOL_DOWN_REP:
+            }
+            else if (btn & BUTTON_DOWN)
+            {
                 change_volume(-1);
-                break;
-            case METRONOME_QUIT:
+            }
+            /* SELECT 键：切换运行状态 */
+            else if (btn & BUTTON_SELECT)
+            {
+                running = !running;
+                if (running) {
+                    metronome_unpause();
+                    rb->lcd_putsf(0, 2, "Running  [STOP]  ");
+                } else {
+                    metronome_pause();
+                    rb->lcd_putsf(0, 2, "Stopped [PLAY]  ");
+                }
+                rb->lcd_update();
+            }
+            /* MENU 键：退出 */
+            else if (btn & BUTTON_MENU)
+            {
                 goto exit_loop;
-            default:
-                common_action = true;
-                break;
+            }
+            /* 可选：PLAY 键也可以切换 */
+            else if (btn & BUTTON_PLAY)
+            {
+                /* 与 SELECT 同样处理 */
+                running = !running;
+                if (running) {
+                    metronome_unpause();
+                    rb->lcd_putsf(0, 2, "Running  [STOP]  ");
+                } else {
+                    metronome_pause();
+                    rb->lcd_putsf(0, 2, "Stopped [PLAY]  ");
+                }
+                rb->lcd_update();
+            }
         }
 
-        if (common_action)
-            exit_on_usb(button);
-
-        if (button)
-            last_button = button;
-
+        /* 定期刷新显示（例如当触发显示时） */
         if (display_trigger)
         {
             display_trigger = false;

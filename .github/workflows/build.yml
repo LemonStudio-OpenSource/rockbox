@@ -20,13 +20,18 @@ jobs:
     - name: Setup Rockbox toolchain
       run: |
         cd tools
-        ./rockboxdev.sh --target=arm --prefix=$HOME/rockbox-toolchain
+        # 参数说明：
+        # --target=a  -> 表示 ARM 架构（iPod 属于 ARM，单字母 a 是脚本规定的写法）
+        # --prefix=$HOME/rockbox-toolchain -> 安装到用户目录，避免权限问题
+        ./rockboxdev.sh --target=a --prefix=$HOME/rockbox-toolchain
         echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
+        # 验证安装
         arm-elf-eabi-gcc --version
 
     - name: Build firmware for iPod Color/Photo
       run: |
         mkdir build && cd build
+        # --target=20 对应 iPod Color/Photo
         ../tools/configure --target=20
         make -j$(nproc)
         make zip

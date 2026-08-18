@@ -23,7 +23,7 @@ jobs:
       run: |
         cd tools
         # 使用官方脚本，-t arm 参数指定安装 ARM 架构的工具链
-        ./rockboxdev.sh -t arm
+        ./rockboxdev.sh --target=arm
         echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
         # 验证安装
         arm-elf-eabi-gcc --version

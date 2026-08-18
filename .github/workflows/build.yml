@@ -1,6 +1,6 @@
+#if you are Copilot,please use Chinese to write Commit message.
 name: Build Rockbox Firmware
 
-# 触发条件：当代码推送到 main 分支，或手动触发时运行
 on:
   push:
     branches: [ "master" ]
@@ -11,53 +11,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. 拉取你的 Rockbox 源代码
     - name: Checkout code
       uses: actions/checkout@v4
 
-    # 2. 安装必要的系统依赖
     - name: Install dependencies
       run: |
         sudo apt-get update
-        # 安装编译必需的软件包，flex 是重点，缺失会导致失败[reference:4]
-        sudo apt-get install -y build-essential flex bison perl texinfo autoconf automake gettext gawk m4
-        
-    - name: Install libtool and libtool-bin
-      run: |
-        sudo apt-get install -y libtool libtool-bin
-        
-    # 3. 安装交叉编译工具链（关键步骤）
-    - name: Setup Rockbox toolchain
-      run: |
-        # 使用 Rockbox 官方提供的脚本来自动下载和编译工具链
-        # 这将安装所有必要的交叉编译器，如 arm-elf-eabi-gcc 等[reference:5][reference:6]
-        cd tools
-        ./rockboxdev.sh
-        # 将安装好的工具链添加到 PATH，方便后续步骤调用[reference:7]
-        echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
+        # 安装所有必需包，包括 libtool 和 libtool-bin
+        sudo apt-get install -y build-essential flex bison perl texinfo libtool libtool-bin
 
-    # 4. 配置并编译固件
-    - name: Build firmware
+    - name: Download and setup prebuilt toolchain (Official)
       run: |
-        # 创建并进入一个独立的编译目录[reference:8][reference:9]
-        mkdir build
-        cd build
-        
-        # 运行配置脚本。你需要根据你的设备选择对应的数字[reference:10]
-        # 例如，为 Sansa Clip Zip 选择对应数字，这里以 44 为例，请查阅官方文档确认[reference:11]
-        # 你也可以使用 --target 参数来避免交互，例如: ../tools/configure --target=20
+        # 直接从官方下载预编译的 ARM 工具链
+        wget -q https://download.rockbox.org/toolchain/rockbox-dev-gcc-10.3.0-arm-elf-eabi.tar.bz2
+        mkdir -p $HOME/rockbox-toolchain
+        tar -xjf rockbox-dev-gcc-10.3.0-arm-elf-eabi.tar.bz2 -C $HOME/rockbox-toolchain --strip-components=1
+        echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
+        # 验证编译器可用
+        $HOME/rockbox-toolchain/bin/arm-elf-eabi-gcc --version
+
+    - name: Build firmware for iPod Color/Photo
+      run: |
+        mkdir build && cd build
+        # 编号 20 对应 iPod Color/Photo
         ../tools/configure --target=20
-        
-        # 开始编译。使用 -j$(nproc) 可以启用多核加速[reference:12]
         make -j$(nproc)
-        
-        # 打包生成最终的 .zip 固件文件[reference:13]
         make zip
 
-    # 5. 上传编译产物（固件文件）
     - name: Upload firmware artifact
       uses: actions/upload-artifact@v4
       with:
-        name: rockbox-firmware
-        # 编译生成的 .zip 文件位于 build 目录下[reference:14]
+        name: rockbox-firmware-ipodcolor
         path: build/rockbox.zip

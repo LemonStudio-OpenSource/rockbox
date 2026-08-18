@@ -24,7 +24,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rockbox-toolchain-arm-
 
-      - name: Install dependencies
+      - name: Install dependencies (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
@@ -34,27 +34,50 @@ jobs:
             libtool libtool-bin \
             autoconf automake gettext gawk m4
 
-      - name: Setup Rockbox toolchain (only if cache miss)
+      - name: Setup Rockbox toolchain (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cd tools
           ./rockboxdev.sh --target=a --prefix=$HOME/rockbox-toolchain
-          # 不需要在这里加 PATH，后续步骤统一处理
 
-      # ⚠️ 关键：单独设置 PATH，对后续所有步骤生效
+      # 诊断：列出工具链目录结构，帮助我们定位 gcc 的实际位置
+      - name: Diagnose toolchain installation
+        run: |
+          echo "=== Contents of $HOME/rockbox-toolchain ==="
+          ls -la $HOME/rockbox-toolchain || echo "Directory not found"
+          echo "=== Searching for arm-elf-eabi-gcc ==="
+          find $HOME/rockbox-toolchain -name "arm-elf-eabi-gcc" -type f 2>/dev/null || echo "Not found"
+
+      # 设置 PATH：根据诊断结果，如果 gcc 在子目录，则调整路径
       - name: Add toolchain to PATH
         run: |
-          echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
+          # 尝试最常见的路径
+          if [ -d "$HOME/rockbox-toolchain/bin" ]; then
+            echo "$HOME/rockbox-toolchain/bin" >> $GITHUB_PATH
+            echo "Using $HOME/rockbox-toolchain/bin"
+          elif [ -d "$HOME/rockbox-toolchain/arm-elf-eabi/bin" ]; then
+            echo "$HOME/rockbox-toolchain/arm-elf-eabi/bin" >> $GITHUB_PATH
+            echo "Using $HOME/rockbox-toolchain/arm-elf-eabi/bin"
+          else
+            # 尝试搜索找到的路径
+            GCC_PATH=$(find $HOME/rockbox-toolchain -name "arm-elf-eabi-gcc" -type f -exec dirname {} \; | head -1)
+            if [ -n "$GCC_PATH" ]; then
+              echo "$GCC_PATH" >> $GITHUB_PATH
+              echo "Using $GCC_PATH"
+            else
+              echo "Could not find arm-elf-eabi-gcc in toolchain cache!"
+              exit 1
+            fi
+          fi
 
-      # ✅ 现在 PATH 已包含工具链，验证一定能找到
       - name: Verify toolchain
         run: |
           arm-elf-eabi-gcc --version
 
       - name: Build firmware for iPod Color/Photo
         run: |
-          # 双重保险：当前 shell 立即生效
-          export PATH="$HOME/rockbox-toolchain/bin:$PATH"
+          # 再次确保 PATH（双重保险）
+          export PATH="$HOME/rockbox-toolchain/bin:$HOME/rockbox-toolchain/arm-elf-eabi/bin:$PATH"
           mkdir -p build && cd build
           ../tools/configure --target=20
           make -j$(nproc)

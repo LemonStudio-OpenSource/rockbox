@@ -16,7 +16,6 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
         # 安装所有必需包，包括 libtool 和 libtool-bin
         sudo apt-get install -y build-essential flex bison perl texinfo libtool libtool-bin
 

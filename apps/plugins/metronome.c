@@ -300,8 +300,8 @@ static void handle_scroll(int dir)
 
 static void handle_input(int btn, int pressed)
 {
-    if (btn & BUTTON_SCROLL_UP)   handle_scroll(1);
-    if (btn & BUTTON_SCROLL_DOWN) handle_scroll(-1);
+    if (btn & BUTTON_SCROLL_FWD)   handle_scroll(1);
+    if (btn & BUTTON_SCROLL_BACK)  handle_scroll(-1);
 
     if (pressed & BUTTON_SELECT) {
         g.edit_item = (g.edit_item + 1) % 4;
@@ -315,18 +315,6 @@ static void handle_input(int btn, int pressed)
         } else {
             log_write("STOPPED");
         }
-    }
-    if (pressed & BUTTON_LEFT) {
-        int v = (int)g.cfg.ts - 1;
-        if (v < 0) v = TS_NUM - 1;
-        g.cfg.ts = v;
-        log_write("TS -> %s", ts_names[g.cfg.ts]);
-    }
-    if (pressed & BUTTON_RIGHT) {
-        int v = (int)g.cfg.ts + 1;
-        if (v >= TS_NUM) v = 0;
-        g.cfg.ts = v;
-        log_write("TS -> %s", ts_names[g.cfg.ts]);
     }
 }
 
@@ -439,7 +427,7 @@ static void draw_ui(void)
 
     /* 底部提示 */
     rb->lcd_set_foreground(C_DIM);
-    rb->lcd_putsxy(4, LCD_H - 10, (const unsigned char *)"PLAY:Start SEL:Edit <> :TS");
+    rb->lcd_putsxy(4, LCD_H - 10, (const unsigned char *)"PLAY:Start SEL:Edit Wheel:Adj");
 
     rb->lcd_update();
 }

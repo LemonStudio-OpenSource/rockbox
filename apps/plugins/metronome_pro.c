@@ -36,8 +36,8 @@
 #define C_RED    LCD_RGBPACK(255, 50,  50)    /* 红色 - 强拍 */
 #define C_ORG    LCD_RGBPACK(255, 180, 40)    /* 橙色 - 次强拍 */
 #define C_BLU    LCD_RGBPACK(50,  150, 255)   /* 蓝色 - 弱拍 */
-#define C_DIM    LCD_RGBPACK(60,  60,  60)    /* 暗灰 - 未激活 */
-#define C_LGRY   LCD_RGBPACK(120, 120, 120)   /* 亮灰 - 已过拍 */
+#define C_DIM    LCD_RGBPACK(200, 200, 200)   /* 亮灰色文字 */
+#define C_LGRY   LCD_RGBPACK(180, 180, 180)   /* 亮灰 - 已过拍 */
 #define C_HL     LCD_RGBPACK(50,  255, 100)   /* 亮绿 - 高亮/激活 */
 
 /* ========== BPM 范围 ========== */
@@ -86,6 +86,16 @@
 #define VOL_STEP  1
 #define BPM_STEP  1
 
+/* ========== 定时器分频 ========== */
+#define TIMER_FREQ  (1000000)   /* 1 MHz 系统时钟，具体见 rockbox 文档 */
+#define TIMER_DIV   500         /* 2ms 分辨率 */
+#define TIMER_PERIOD (TIMER_FREQ / TIMER_DIV)  /* 定时器周期滴答数 */
+
+/* 全局状态扩展 */
+static unsigned int minitick = 0;
+static unsigned int period = 0;
+static volatile bool sound_trigger = false;
+static bool timer_running = false;
 
 /* raw PCM */
 static signed short tick_sound[] =
@@ -491,6 +501,22 @@ static void prepare_buffers(void)
     }
 }
 
+static void timer_callback(void)
+{
+    ++minitick;
+    if (minitick >= period && g.state == 1) {
+        minitick = 0;
+        sound_trigger = true;
+    }
+}
+
+static void update_bpm_period(void)
+{
+    g.tick_interval = BPM_TO_TICKS(g.bpm);
+    period = (g.tick_interval * TIMER_DIV) / HZ;
+    if (period < 1) period = 1;
+}
+
 
 /* ========== 拍号定义 ========== */
 enum time_signature {
@@ -642,14 +668,14 @@ static void metro_check(void)
             g.current_beat = 0;
             g.bar_count++;
 
-            /* 渐进加速: 每 N 小节增加 GRAD_STEP BPM */
+            /* 渐进加速 */
             if (g.gradual_accel > 0 &&
                 g.bar_count % g.gradual_accel == 0 &&
                 g.bpm < g.gradual_target) {
                 g.bpm += GRAD_STEP;
                 if (g.bpm > g.gradual_target)
                     g.bpm = g.gradual_target;
-                g.tick_interval = BPM_TO_TICKS(g.bpm);
+                update_bpm_period();   // 关键：更新定时器周期
             }
         }
 
@@ -662,10 +688,14 @@ static void metro_check(void)
 
 static void metro_reset(void)
 {
-    g.tick_interval = BPM_TO_TICKS(g.bpm);
-    g.next_beat_tick = *rb->current_tick + g.tick_interval;
+    update_bpm_period();
+    minitick = 0;
     g.current_beat = 0;
     g.bar_count = 0;
+    if (!timer_running) {
+        rb->timer_register(1, timer_callback, TIMER_FREQ / TIMER_DIV);
+        timer_running = true;
+    }
 }
 
 
@@ -674,23 +704,29 @@ static void metro_reset(void)
 static void tap_handle(void)
 {
     long now = *rb->current_tick;
+    long interval = now - g.tap_last_time;
+
+    /* 如果间隔过短（< 50ms），视为误触，忽略并重置 */
+    if (g.tap_last_time != 0 && interval < HZ / 20) {
+        g.tap_last_time = 0;   // 清空，防止后续误判
+        return;
+    }
 
     /* 如果离上次按下超过 TAP_TIMEOUT，重置为第一次单击 */
-    if (g.tap_last_time == 0 || (now - g.tap_last_time) > TAP_TIMEOUT) {
+    if (g.tap_last_time == 0 || interval > TAP_TIMEOUT) {
         /* 单击：仅记录时间，不计算 BPM */
         g.tap_last_time = now;
         return;
     }
 
     /* 在超时内再次按下 → 视为双击，计算 BPM */
-    long interval = now - g.tap_last_time;
     if (interval > 0) {
         int bpm = 60 * HZ / interval;
         if (bpm < BPM_MIN) bpm = BPM_MIN;
         if (bpm > BPM_MAX) bpm = BPM_MAX;
         g.bpm = bpm;
+        update_bpm_period();
         g.tap_bpm = bpm;
-        g.tick_interval = BPM_TO_TICKS(g.bpm);
         /* 打点后重置，使下一次单击正常切换焦点 */
         g.tap_last_time = 0;
         g.key_feedback = FLASH_FRAMES;
@@ -895,24 +931,24 @@ static void draw_ui(void)
 static void handle_input(int btn, int pressed)
 {
     /* 1. 滚轮控制：根据当前焦点调节对应参数 */
-    if (pressed & BUTTON_SCROLL_FWD) {
+    if (pressed & (BUTTON_SCROLL_FWD | BUTTON_SCROLL_FWD_REPEAT)) {
         switch (g.key_focus) {
             case 0: /* BPM */
                 g.bpm = MIN(g.bpm + BPM_STEP, BPM_MAX);
-				g.tick_interval = BPM_TO_TICKS(g.bpm);
+                update_bpm_period();
                 break;
             case 1: /* TS */
                 g.ts = (g.ts + 1) % TS_NUM;
                 break;
             case 2: /* VOL */
-				{
-					int min_vol = rb->sound_min(SOUND_VOLUME);
-					int max_vol = rb->sound_max(SOUND_VOLUME);
-					g.volume = MIN(g.volume + VOL_STEP, VOL_MAX);   // 现在步进由常量统一管理
-					int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-					rb->sound_set(SOUND_VOLUME, sys_vol);
-					break;
-				}
+                {
+                    int min_vol = rb->sound_min(SOUND_VOLUME);
+                    int max_vol = rb->sound_max(SOUND_VOLUME);
+                    g.volume = MIN(g.volume + VOL_STEP, VOL_MAX);
+                    int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
+                    rb->sound_set(SOUND_VOLUME, sys_vol);
+                    break;
+                }
             case 3: /* SWING */
                 g.swing = MIN(g.swing + 5, SWING_MAX);
                 break;
@@ -920,24 +956,24 @@ static void handle_input(int btn, int pressed)
         g.key_feedback = FLASH_FRAMES;
         return;
     }
-    if (pressed & BUTTON_SCROLL_BACK) {
+    if (pressed & (BUTTON_SCROLL_BACK | BUTTON_SCROLL_BACK_REPEAT)) {
         switch (g.key_focus) {
             case 0: /* BPM */
                 g.bpm = MAX(g.bpm - BPM_STEP, BPM_MIN);
-				g.tick_interval = BPM_TO_TICKS(g.bpm);
+                update_bpm_period();
                 break;
             case 1: /* TS */
                 g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
                 break;
             case 2: /* VOL */
-				{
-					int min_vol = rb->sound_min(SOUND_VOLUME);
-					int max_vol = rb->sound_max(SOUND_VOLUME);
-					g.volume = MAX(g.volume - VOL_STEP, VOL_MIN);
-					int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-					rb->sound_set(SOUND_VOLUME, sys_vol);
-					break;
-				}
+                {
+                    int min_vol = rb->sound_min(SOUND_VOLUME);
+                    int max_vol = rb->sound_max(SOUND_VOLUME);
+                    g.volume = MAX(g.volume - VOL_STEP, VOL_MIN);
+                    int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
+                    rb->sound_set(SOUND_VOLUME, sys_vol);
+                    break;
+                }
             case 3: /* SWING */
                 g.swing = MAX(g.swing - 5, SWING_MIN);
                 break;
@@ -965,10 +1001,16 @@ static void handle_input(int btn, int pressed)
     /* 3. PLAY/PAUSE：开始/暂停 */
     if (pressed & BUTTON_PLAY) {
         if (g.state == 1) {
-            g.state = 2;    // 暂停
+            g.state = 2;
+            if (timer_running) {
+                rb->timer_unregister();
+                timer_running = false;
+            }
+            rb->splash(HZ/2, "Paused");
         } else {
-            g.state = 1;    // 播放
-            metro_reset();
+            g.state = 1;
+            metro_reset();  // 重新启动定时器
+            rb->splash(HZ/2, "Play");
         }
         return;
     }
@@ -980,49 +1022,49 @@ static void handle_input(int btn, int pressed)
 
     /* 5. 其他按键：保留方向键支持（仅对有方向键的设备） */
     #ifdef BUTTON_LEFT
-	if (pressed & BUTTON_LEFT) {
-		if (g.key_focus == 0) {
-			g.bpm = MAX(g.bpm - 1, BPM_MIN);
-			g.tick_interval = BPM_TO_TICKS(g.bpm);
-		}
-		else if (g.key_focus == 1) g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
-		g.key_feedback = FLASH_FRAMES;
-	}
-	#endif
-	#ifdef BUTTON_RIGHT
-	if (pressed & BUTTON_RIGHT) {
-		if (g.key_focus == 0) {
-			g.bpm = MIN(g.bpm + 1, BPM_MAX);
-			g.tick_interval = BPM_TO_TICKS(g.bpm);
-		}
-		else if (g.key_focus == 1) g.ts = (g.ts + 1) % TS_NUM;
-		g.key_feedback = FLASH_FRAMES;
-	}
-	#endif
+    if (pressed & BUTTON_LEFT) {
+        if (g.key_focus == 0) {
+            g.bpm = MAX(g.bpm - 1, BPM_MIN);
+            update_bpm_period();
+        }
+        else if (g.key_focus == 1) g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
+        g.key_feedback = FLASH_FRAMES;
+    }
+    #endif
+    #ifdef BUTTON_RIGHT
+    if (pressed & BUTTON_RIGHT) {
+        if (g.key_focus == 0) {
+            g.bpm = MIN(g.bpm + 1, BPM_MAX);
+            update_bpm_period();
+        }
+        else if (g.key_focus == 1) g.ts = (g.ts + 1) % TS_NUM;
+        g.key_feedback = FLASH_FRAMES;
+    }
+    #endif
     #ifdef BUTTON_UP
-	if (pressed & BUTTON_UP) {
-		if (g.key_focus == 2) {
-			int min_vol = rb->sound_min(SOUND_VOLUME);
-			int max_vol = rb->sound_max(SOUND_VOLUME);
-			g.volume = MIN(g.volume + VOL_STEP, VOL_MAX);
-			int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-			rb->sound_set(SOUND_VOLUME, sys_vol);
-		}
-		g.key_feedback = FLASH_FRAMES;
-	}
-	#endif
-	#ifdef BUTTON_DOWN
-	if (pressed & BUTTON_DOWN) {
-		if (g.key_focus == 2) {
-			int min_vol = rb->sound_min(SOUND_VOLUME);
-			int max_vol = rb->sound_max(SOUND_VOLUME);
-			g.volume = MAX(g.volume - VOL_STEP, VOL_MIN);
-			int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-			rb->sound_set(SOUND_VOLUME, sys_vol);
-		}
-		g.key_feedback = FLASH_FRAMES;
-	}
-	#endif
+    if (pressed & BUTTON_UP) {
+        if (g.key_focus == 2) {
+            int min_vol = rb->sound_min(SOUND_VOLUME);
+            int max_vol = rb->sound_max(SOUND_VOLUME);
+            g.volume = MIN(g.volume + VOL_STEP, VOL_MAX);
+            int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
+            rb->sound_set(SOUND_VOLUME, sys_vol);
+        }
+        g.key_feedback = FLASH_FRAMES;
+    }
+    #endif
+    #ifdef BUTTON_DOWN
+    if (pressed & BUTTON_DOWN) {
+        if (g.key_focus == 2) {
+            int min_vol = rb->sound_min(SOUND_VOLUME);
+            int max_vol = rb->sound_max(SOUND_VOLUME);
+            g.volume = MAX(g.volume - VOL_STEP, VOL_MIN);
+            int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
+            rb->sound_set(SOUND_VOLUME, sys_vol);
+        }
+        g.key_feedback = FLASH_FRAMES;
+    }
+    #endif
 }
 
 /* ========== 主入口 ========== */
@@ -1044,11 +1086,11 @@ enum plugin_status plugin_start(const void *parameter)
     g.bpm = BPM_DEF;
     g.ts = TS_4_4;
     int min_vol = rb->sound_min(SOUND_VOLUME);
-	int max_vol = rb->sound_max(SOUND_VOLUME);
-	int cur_vol = rb->global_status->volume;
-	g.volume = (cur_vol - min_vol) * 255 / (max_vol - min_vol);
-	if (g.volume < 0) g.volume = 0;
-	if (g.volume > 255) g.volume = 255;
+    int max_vol = rb->sound_max(SOUND_VOLUME);
+    int cur_vol = rb->global_status->volume;
+    g.volume = (cur_vol - min_vol) * 255 / (max_vol - min_vol);
+    if (g.volume < 0) g.volume = 0;
+    if (g.volume > 255) g.volume = 255;
     g.swing = SWING_DEF;
     g.gradual_accel = GRAD_DEF;
     g.gradual_target = BPM_DEF;
@@ -1066,9 +1108,9 @@ enum plugin_status plugin_start(const void *parameter)
     g.last_beat = -1;
     g.last_btn = 0;
 
-    /* 主循环: 20ms 轮询, 兼顾响应与功耗 */
+    /* 主循环: 3ms 轮询, 兼顾响应与功耗 */
     while (1) {
-        int btn = rb->button_get_w_tmo(HZ / 50);
+        int btn = rb->button_get_w_tmo(HZ / 333);
         int pressed = btn & ~g.last_btn;
         g.last_btn = btn;
 
@@ -1105,8 +1147,8 @@ enum plugin_status plugin_start(const void *parameter)
         draw_ui();
         rb->yield();
     }
-	/* 停止播放通道 */
-	rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
+    /* 停止播放通道 */
+    rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
 
     return PLUGIN_OK;
 }

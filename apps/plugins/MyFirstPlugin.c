@@ -1,12 +1,12 @@
 #include "plugin.h"
 void ShowTextOnTheScreen(const char *text);
-void ShowTextByXY(const char *text,int x,int y);
+void ShowTextByXY(int x,int y,const char *text);
 void ShowTextOnTheScreen(const char *text)
 	{
 		rb->splash(HZ*3, text);
 		return;
 	}
-void ShowTextByXY(const char *text,int x,int y)
+void ShowTextByXY(int x,int y,const char *text)
 	{
 		rb->lcd_putsxy(x, y, text);
 		return;

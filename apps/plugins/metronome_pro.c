@@ -45,10 +45,10 @@
 #define BPM_MAX  280
 #define BPM_DEF  120
 
-/* ========== 音量范围 ========== */
-#define VOL_MIN  20
-#define VOL_MAX  100
-#define VOL_DEF  80
+/* ========== 音量范围 (0-255 对应 beep_play 振幅) ========== */
+#define VOL_MIN  0
+#define VOL_MAX  255
+#define VOL_DEF  200
 
 /* ========== 摇摆范围 ========== */
 #define SWING_MIN  0
@@ -80,6 +80,7 @@
 
 /* ========== Tap Tempo ========== */
 #define TAP_HISTORY  8
+#define TAP_TIMEOUT  (HZ / 2)   /* 500ms 内为双击 */
 
 
 /* ========== 拍号定义 ========== */
@@ -126,15 +127,14 @@ static struct {
     int silent_bars;
 
     /* 运行时状态 */
-    int state;
+    int state;          /* 0=停止, 1=播放, 2=暂停 */
     int current_beat;
     int bar_count;
     long next_beat_tick;
     int tick_interval;
 
     /* Tap Tempo */
-    int tap_times[TAP_HISTORY];
-    int tap_count;
+    long tap_last_time;
     int tap_bpm;
 
     /* 动画状态 */
@@ -145,7 +145,7 @@ static struct {
     int sub_prog;
     int last_beat;
     int key_feedback;
-    int key_focus;
+    int key_focus;      /* 0=BPM, 1=TS, 2=VOL, 3=SWING */
 
     /* 输入 */
     int last_btn;
@@ -248,34 +248,32 @@ static void metro_reset(void)
     g.bar_count = 0;
 }
 
-/* ========== Tap Tempo ========== */
 
-static void tap_calculate(void)
-{
-    if (g.tap_count < 2) return;
+/* ========== Tap Tempo (双击检测) ========== */
 
-    int total = 0;
-    for (int i = 1; i < g.tap_count; i++)
-        total += g.tap_times[i] - g.tap_times[i - 1];
-
-    int avg = total / (g.tap_count - 1);
-    if (avg > 0) {
-        g.tap_bpm = 60 * HZ / avg;
-        if (g.tap_bpm < BPM_MIN) g.tap_bpm = BPM_MIN;
-        if (g.tap_bpm > BPM_MAX) g.tap_bpm = BPM_MAX;
-    }
-}
-
-static void tap_record(void)
+static void tap_handle(void)
 {
     long now = *rb->current_tick;
 
-    if (g.tap_count > 0 && now - g.tap_times[g.tap_count - 1] > HZ * 2)
-        g.tap_count = 0;
+    /* 如果离上次按下超过 TAP_TIMEOUT，重置为第一次单击 */
+    if (g.tap_last_time == 0 || (now - g.tap_last_time) > TAP_TIMEOUT) {
+        /* 单击：仅记录时间，不计算 BPM */
+        g.tap_last_time = now;
+        return;
+    }
 
-    if (g.tap_count < TAP_HISTORY) {
-        g.tap_times[g.tap_count++] = now;
-        tap_calculate();
+    /* 在超时内再次按下 → 视为双击，计算 BPM */
+    long interval = now - g.tap_last_time;
+    if (interval > 0) {
+        int bpm = 60 * HZ / interval;
+        if (bpm < BPM_MIN) bpm = BPM_MIN;
+        if (bpm > BPM_MAX) bpm = BPM_MAX;
+        g.bpm = bpm;
+        g.tap_bpm = bpm;
+        g.tick_interval = BPM_TO_TICKS(g.bpm);
+        /* 打点后重置，使下一次单击正常切换焦点 */
+        g.tap_last_time = 0;
+        g.key_feedback = FLASH_FRAMES;
     }
 }
 
@@ -452,14 +450,14 @@ static void draw_ui(void)
     }
 
     /* ===== Tap Tempo 指示器 (y=122) ===== */
-    if (g.tap_count >= 2) {
-        rb->lcd_set_foreground(C_HL);
-        rb->snprintf(buf, sizeof(buf), "Tap: %d BPM", g.tap_bpm);
-        rb->lcd_putsxy(50, 122, (const unsigned char *)buf);
+    if (g.tap_last_time != 0) {
+        rb->lcd_set_foreground(C_DIM);
+        rb->lcd_putsxy(30, 122,
+                       (const unsigned char *)"Tap again to set BPM");
     } else {
         rb->lcd_set_foreground(C_DIM);
         rb->lcd_putsxy(30, 122,
-                       (const unsigned char *)"Double-tap SELECT for Tap Tempo");
+                       (const unsigned char *)"Double-tap SELECT for Tempo");
     }
 
     /* ===== 底部操作提示 (y=148) ===== */
@@ -476,50 +474,62 @@ static void draw_ui(void)
 
 static void handle_input(int btn, int pressed)
 {
-    /* 防止未使用参数警告 */
-    (void)btn;
-
-    /* 1. 滚轮控制：始终调节 Swing 或 音量 (根据焦点) */
+    /* 1. 滚轮控制：根据当前焦点调节对应参数 */
     if (pressed & BUTTON_SCROLL_FWD) {
-        if (g.key_focus == 3) {
-            g.swing = MIN(g.swing + 5, 75);
-        } else {
-            g.volume = MIN(g.volume + 1, 10);
+        switch (g.key_focus) {
+            case 0: /* BPM */
+                g.bpm = MIN(g.bpm + 5, BPM_MAX);
+                break;
+            case 1: /* TS */
+                g.ts = (g.ts + 1) % TS_NUM;
+                break;
+            case 2: /* VOL */
+                g.volume = MIN(g.volume + 5, VOL_MAX);
+                break;
+            case 3: /* SWING */
+                g.swing = MIN(g.swing + 5, SWING_MAX);
+                break;
         }
         g.key_feedback = FLASH_FRAMES;
         return;
     }
     if (pressed & BUTTON_SCROLL_BACK) {
-        if (g.key_focus == 3) {
-            g.swing = MAX(g.swing - 5, 0);
-        } else {
-            g.volume = MAX(g.volume - 1, 0);
+        switch (g.key_focus) {
+            case 0: /* BPM */
+                g.bpm = MAX(g.bpm - 5, BPM_MIN);
+                break;
+            case 1: /* TS */
+                g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
+                break;
+            case 2: /* VOL */
+                g.volume = MAX(g.volume - 5, VOL_MIN);
+                break;
+            case 3: /* SWING */
+                g.swing = MAX(g.swing - 5, SWING_MIN);
+                break;
         }
         g.key_feedback = FLASH_FRAMES;
         return;
     }
 
-    /* 2. SELECT (中心键)：切换焦点 / Tap Tempo */
+    /* 2. SELECT (中心键)：单击切换焦点，双击打点调速 */
     if (pressed & BUTTON_SELECT) {
-        /* 简单双击检测：如果距离上次 < 400ms，视为 Tap */
-        long now = *rb->current_tick;
-        tap_record();  // 无参数，内部用 tap_times[] 环形缓冲区
-		if (g.tap_count >= 2) {
-			g.bpm = g.tap_bpm;
-			g.tick_interval = BPM_TO_TICKS(g.bpm);
-			g.key_focus = 0;
-			g.key_feedback = 12;
-		} else {
-			g.key_focus = (g.key_focus + 1) % 4;
-			g.key_feedback = 6;
-		}
-        // 已删除重复的 g.key_feedback = FLASH_FRAMES;
+        /* 检测是否双击 */
+        if (g.tap_last_time != 0 && (*rb->current_tick - g.tap_last_time) <= TAP_TIMEOUT) {
+            /* 双击：执行 Tap Tempo */
+            tap_handle();  // 内部会更新 bpm 并重置 tap_last_time
+        } else {
+            /* 单击：切换焦点 */
+            g.key_focus = (g.key_focus + 1) % 4;
+            g.key_feedback = FLASH_FRAMES;
+            /* 记录第一次单击的时间，为下一次双击做准备 */
+            g.tap_last_time = *rb->current_tick;
+        }
         return;
     }
 
     /* 3. PLAY/PAUSE：开始/暂停 */
     if (pressed & BUTTON_PLAY) {
-        metro_reset();
         if (g.state == 1) {
             g.state = 2;    // 暂停
         } else {
@@ -534,23 +544,31 @@ static void handle_input(int btn, int pressed)
         return;
     }
 
-    /* 5. 其他按键：根据当前焦点调整 */
-    /* 注意：iPod Classic 没有 LEFT/RIGHT 物理按键，
-       这里用 SCROLL 配合 SELECT 切换焦点来调整，
-       或者你可以用 BUTTON_SCROLL_FWD/BACK 配合 BUTTON_SELECT 按住来快速调 */
-    
-    /* 如果非要保留 LEFT/RIGHT 逻辑（仅对有方向键的设备生效）： */
+    /* 5. 其他按键：保留方向键支持（仅对有方向键的设备） */
     #ifdef BUTTON_LEFT
     if (pressed & BUTTON_LEFT) {
-        if (g.key_focus == 0) g.bpm = MAX(g.bpm - 1, 30);
-        else { g.ts--; if(g.ts<0) g.ts=TS_NUM-1; }
+        if (g.key_focus == 0) g.bpm = MAX(g.bpm - 1, BPM_MIN);
+        else if (g.key_focus == 1) g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
         g.key_feedback = FLASH_FRAMES;
     }
     #endif
     #ifdef BUTTON_RIGHT
     if (pressed & BUTTON_RIGHT) {
-        if (g.key_focus == 0) g.bpm = MIN(g.bpm + 1, 300);
-        else { g.ts++; if(g.ts>=TS_NUM) g.ts=0; }
+        if (g.key_focus == 0) g.bpm = MIN(g.bpm + 1, BPM_MAX);
+        else if (g.key_focus == 1) g.ts = (g.ts + 1) % TS_NUM;
+        g.key_feedback = FLASH_FRAMES;
+    }
+    #endif
+    /* 上下键可作为音量调节的备选 */
+    #ifdef BUTTON_UP
+    if (pressed & BUTTON_UP) {
+        if (g.key_focus == 2) g.volume = MIN(g.volume + 5, VOL_MAX);
+        g.key_feedback = FLASH_FRAMES;
+    }
+    #endif
+    #ifdef BUTTON_DOWN
+    if (pressed & BUTTON_DOWN) {
+        if (g.key_focus == 2) g.volume = MAX(g.volume - 5, VOL_MIN);
         g.key_feedback = FLASH_FRAMES;
     }
     #endif
@@ -578,7 +596,7 @@ enum plugin_status plugin_start(const void *parameter)
     g.current_beat = 0;
     g.bar_count = 0;
     g.key_focus = 0;
-    g.tap_count = 0;
+    g.tap_last_time = 0;
     g.tap_bpm = BPM_DEF;
     g.beat_ease_frames = 0;
     g.bpm_breathe = 0;
@@ -629,4 +647,3 @@ enum plugin_status plugin_start(const void *parameter)
 
     return PLUGIN_OK;
 }
-

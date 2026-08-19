@@ -694,7 +694,7 @@ static void metro_reset(void)
     g.current_beat = 0;
     g.bar_count = 0;
     if (!timer_running) {
-        rb->timer_register(1, timer_callback, TIMER_FREQ / TIMER_DIV IF_COP(, CPU));
+        rb->timer_register(1, NULL, TIMER_FREQ / TIMER_DIV, timer_callback IF_COP(, CPU));
         timer_running = true;
     }
 }
@@ -929,9 +929,10 @@ static void draw_ui(void)
 
 /* ========== 输入处理 ========== */
 
-static void handle_input(int /*btn*/, int pressed)
+static void handle_input(int btn, int pressed)
 {
-    /* 1. 滚轮控制：根据当前焦点调节对应参数 */
+    (void)btn;
+	/* 1. 滚轮控制：根据当前焦点调节对应参数 */
     if (pressed & (BUTTON_SCROLL_FWD)) {
         switch (g.key_focus) {
             case 0: /* BPM */

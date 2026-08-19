@@ -12,9 +12,7 @@
  ***************************************************************************/
 
 #include "plugin.h"
-#include <string.h>
-#include <stdlib.h>
-#include <ctype.h>
+#include <ctype.h>   /* 仅用于 isdigit */
 
 /* --------------------- 常量 ------------------------ */
 #define MAX_EXPR 80
@@ -43,6 +41,7 @@ static void draw_screen(void);
 
 /* --------------------- 实现 ------------------------ */
 
+/* 向表达式尾部追加一个字符 */
 static void append_char(char ch)
 {
     if (expr_len < MAX_EXPR - 1) {
@@ -51,6 +50,7 @@ static void append_char(char ch)
     }
 }
 
+/* 删除最后一个字符 */
 static void delete_char(void)
 {
     if (expr_len > 0) {
@@ -58,11 +58,13 @@ static void delete_char(void)
     }
 }
 
+/* 切换数字/符号模式 */
 static void mode_toggle(void)
 {
     mode = !mode;
 }
 
+/* 移动光标 (direction: 1右, -1左) */
 static void move_cursor(int direction)
 {
     if (mode == 0) {
@@ -76,12 +78,15 @@ static void move_cursor(int direction)
     }
 }
 
-/* ---------- 表达式求值 (long long) ---------- */
+/* ---------- 表达式求值 (long long) ----------
+ * 使用调度场算法计算中缀表达式，支持 + - * / (整数除法)
+ * 成功返回结果，失败时 *error = 1
+ */
 static long long eval_expr(const char *expr_in, int *error)
 {
     *error = 0;
-    char buf[MAX_EXPR];
-    strcpy(buf, expr_in);
+    /* 直接使用输入字符串，不复制 */
+    const char *buf = expr_in;
 
     long long num_stack[MAX_EXPR];
     char op_stack[MAX_EXPR];
@@ -113,7 +118,7 @@ static long long eval_expr(const char *expr_in, int *error)
                         case '*': res = a * b; break;
                         case '/':
                             if (b == 0) { *error = 1; return 0; }
-                            res = a / b;
+                            res = a / b;   /* 整数除法，向零取整 */
                             break;
                         default: *error = 1; return 0;
                     }
@@ -123,6 +128,7 @@ static long long eval_expr(const char *expr_in, int *error)
             op_stack[++op_top] = buf[i];
             i++;
         } else {
+            /* 忽略空格等无效字符 */
             i++;
         }
     }
@@ -145,7 +151,10 @@ static long long eval_expr(const char *expr_in, int *error)
         num_stack[++num_top] = res;
     }
 
-    if (num_top != 0) { *error = 1; return 0; }
+    if (num_top != 0) {
+        *error = 1;
+        return 0;
+    }
     return num_stack[0];
 }
 
@@ -153,56 +162,66 @@ static long long eval_expr(const char *expr_in, int *error)
 static void process_select(void)
 {
     if (mode == 0) {
+        /* 输入数字 */
         char ch = '0' + digit_pos;
         append_char(ch);
     } else {
+        /* 符号模式 */
         if (symbol_pos == 4) {
+            /* DEL 删除 */
             delete_char();
         } else {
             char op;
             switch (symbol_pos) {
                 case 0: op = '+'; break;
                 case 1: op = '-'; break;
-                case 2: op = '*'; break;
-                case 3: op = '/'; break;
+                case 2: op = '*'; break;   /* 内部存储用 * */
+                case 3: op = '/'; break;   /* 内部存储用 / */
                 default: return;
             }
 
-            /* 负数规则：空表达式输入 '-' 变为 "0-" */
+            /* 负数输入规则：表达式为空时输入 '-' 自动变为 "0-" */
             if (expr_len == 0 && op == '-') {
                 expr[expr_len++] = '0';
                 expr[expr_len++] = '-';
                 expr[expr_len] = '\0';
                 return;
             }
+
+            /* 表达式不能以运算符开头（除上述负数规则外） */
             if (expr_len == 0) return;
 
+            /* 连续运算符替换（最后一个运算符被替换为新运算符） */
             char last = expr[expr_len - 1];
             if (last == '+' || last == '-' || last == '*' || last == '/') {
                 expr[expr_len - 1] = op;
                 return;
             }
+
+            /* 正常追加运算符 */
             append_char(op);
         }
     }
 }
 
-/* ---------- 计算 ---------- */
+/* ---------- 按下 PLAY 执行计算 ---------- */
 static void calculate(void)
 {
     if (expr_len == 0) return;
+
     int error = 0;
     long long result = eval_expr(expr, &error);
     if (error) {
-        strcpy(expr, "Error");
-        expr_len = strlen(expr);
+        /* 用 rb->snprintf 替代 strcpy/strlen */
+        expr_len = rb->snprintf(expr, MAX_EXPR, "%s", "Error");
         return;
     }
-    rb->snprintf(expr, MAX_EXPR, "%lld", result);
-    expr_len = strlen(expr);
+
+    /* 结果转为字符串，保存长度 */
+    expr_len = rb->snprintf(expr, MAX_EXPR, "%lld", result);
 }
 
-/* ---------- 构建显示字符串 (将 * / 转换为 × ÷) ---------- */
+/* ---------- 构建显示字符串：将 * / 替换为 × ÷ (UTF-8) ---------- */
 static void build_display_string(const char *src, char *dst, size_t dst_size)
 {
     size_t i = 0, j = 0;
@@ -222,13 +241,13 @@ static void build_display_string(const char *src, char *dst, size_t dst_size)
     dst[j] = '\0';
 }
 
-/* ---------- 绘制屏幕 ---------- */
+/* ---------- 绘制屏幕 UI ---------- */
 static void draw_screen(void)
 {
     rb->lcd_clear_display();
     rb->lcd_set_foreground(LCD_BLACK);
 
-    /* 显示框 */
+    /* ---- 显示框 ---- */
     int display_y = 10;
     int display_height = 30;
     rb->lcd_drawrect(0, display_y, LCD_WIDTH, display_height);
@@ -237,7 +256,7 @@ static void draw_screen(void)
     build_display_string(expr, display_buf, sizeof(display_buf));
     rb->lcd_putsxy(5, display_y + 2, display_buf);
 
-    /* 数字行 */
+    /* ---- 数字行 (0~9) ---- */
     int digit_y = display_y + display_height + 20;
     int digit_x = 10;
     int digit_spacing = 20;
@@ -245,19 +264,21 @@ static void draw_screen(void)
         char d[2] = { '0' + i, '\0' };
         rb->lcd_putsxy(digit_x + i * digit_spacing, digit_y, d);
     }
+    /* 数字光标 */
     if (mode == 0) {
         int cx = digit_x + digit_pos * digit_spacing;
         int cy = digit_y + 12;
         rb->lcd_putsxy(cx, cy, "^");
     }
 
-    /* 符号行 */
+    /* ---- 符号行 (+ - × ÷ DEL) ---- */
     int symbol_y = digit_y + 25;
     int symbol_x = 10;
     int symbol_spacing = 30;
     for (int i = 0; i < SYMBOL_COUNT; i++) {
         rb->lcd_putsxy(symbol_x + i * symbol_spacing, symbol_y, symbol_display[i]);
     }
+    /* 符号光标 */
     if (mode == 1) {
         int cx = symbol_x + symbol_pos * symbol_spacing;
         int cy = symbol_y + 12;
@@ -272,6 +293,7 @@ enum plugin_status plugin_start(const void *parameter)
 {
     (void)parameter;
 
+    /* 初始化状态 */
     expr[0] = '\0';
     expr_len = 0;
     mode = 0;
@@ -308,7 +330,7 @@ enum plugin_status plugin_start(const void *parameter)
                 draw_screen();
                 break;
 
-            /* 移动光标：仅用滚轮（左右键已用于切换模式） */
+            /* 移动光标：仅用滚轮 */
             case BUTTON_SCROLL_FWD:
                 move_cursor(1);
                 draw_screen();

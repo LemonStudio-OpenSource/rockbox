@@ -1,17 +1,20 @@
 /***************************************************************************
- *  calc.c - 简易整数计算器 (支持 long long 大整数)
+ *  calculator.c - 简易整数计算器插件 (iPod Color 优化)
  *  
- *  按键功能：
- *    - 数字/符号模式切换：上一曲 / 下一曲
- *    - 移动光标：滚轮 或 左/右方向键
- *    - 输入选中内容：SELECT
- *    - 计算结果：PLAY
- *    - 退出：MENU
+ *  功能：
+ *    - 四则运算：加、减、乘、除
+ *    - 支持长整数 (long long，范围约 ±9e18)
+ *    - 负数输入：按 '-' 自动转为 0- 形式
+ *    - 显示乘号 ×、除号 ÷ (UTF-8)
  *
- *  负数输入：直接按 '-'（减号），自动变为 "0-" 表示 0 - 数字
- *  运算范围：-2^63 ~ 2^63-1 （约 ±9.22e18）
+ *  按键映射 (iPod Color)：
+ *    - 上一曲 (左键) / 下一曲 (右键)  : 切换数字/符号模式
+ *    - 滚轮向前/向后                 : 移动光标
+ *    - SELECT (中间键)               : 输入当前选中的数字或符号
+ *    - PLAY (播放键)                 : 计算结果
+ *    - MENU (菜单键)                 : 退出插件
  *
- *  内存：栈数组大小 MAX_EXPR=80，long long 栈最多80个，完全在512KB内
+ *  内存占用：栈数组较小，完全在 512KB 插件缓冲区以内。
  ***************************************************************************/
 
 #include "plugin.h"
@@ -20,12 +23,13 @@
 #include <ctype.h>
 
 /* --------------------- 常量定义 ------------------------ */
-#define MAX_EXPR 80            /* 表达式字符串最大长度 */
+#define MAX_EXPR 80            /* 表达式字符串最大长度（内部存储 * / ） */
+#define MAX_DISPLAY 160        /* 显示缓冲区大小（×÷ 各占 2 字节 UTF-8） */
 #define DIGIT_COUNT 10         /* 数字 0~9 */
 #define SYMBOL_COUNT 5         /* 运算符 + - × ÷ 和 DEL */
 
 /* --------------------- 全局状态变量 -------------------- */
-static char expr[MAX_EXPR];          /* 当前输入的表达式，例如 "123*45" */
+static char expr[MAX_EXPR];          /* 内部表达式，使用 * / */
 static int expr_len;                 /* expr 有效长度 */
 static int mode;                     /* 0=数字模式，1=符号模式 */
 static int digit_pos;                /* 数字光标 (0~9) */
@@ -37,14 +41,15 @@ static void append_char(char ch);
 static void delete_char(void);
 static void mode_toggle(void);
 static void move_cursor(int direction);
-static long long eval_expr(const char *expr_in, int *error);   /* 返回 long long */
+static long long eval_expr(const char *expr_in, int *error);
 static void process_select(void);
 static void calculate(void);
+static void build_display_string(const char *src, char *dst, size_t dst_size);
 static void draw_screen(void);
 
 /* --------------------- 函数实现 ------------------------ */
 
-/* 向表达式尾部追加一个字符 */
+/* 向表达式尾部追加一个字符（内部字符） */
 static void append_char(char ch)
 {
     if (expr_len < MAX_EXPR - 1) {
@@ -92,15 +97,10 @@ static long long eval_expr(const char *expr_in, int *error)
     char buf[MAX_EXPR];
     strcpy(buf, expr_in);
 
-    /* 将显示符号 × ÷ 转回内部运算符号 * / */
-    for (int i = 0; buf[i]; i++) {
-        if (buf[i] == '×') buf[i] = '*';
-        else if (buf[i] == '÷') buf[i] = '/';
-    }
+    /* 因为内部存储已经使用 * 和 /，无需再转换 × ÷ */
 
-    /* 使用 long long 栈 */
     long long num_stack[MAX_EXPR];
-    char op_stack[MAX_EXPR];          /* 运算符栈，存储字符 */
+    char op_stack[MAX_EXPR];
     int num_top = -1, op_top = -1;
     int i = 0;
 
@@ -141,7 +141,7 @@ static long long eval_expr(const char *expr_in, int *error)
             op_stack[++op_top] = buf[i];
             i++;
         } else {
-            /* 忽略空格等无效字符 */
+            /* 忽略空格等无效字符（理论上不会出现） */
             i++;
         }
     }
@@ -236,6 +236,31 @@ static void calculate(void)
     expr_len = strlen(expr);
 }
 
+/* ---------- 构建显示字符串：将 * / 替换为 × ÷ (UTF-8) ----------
+ * src: 内部表达式 (含 * /)
+ * dst: 输出缓冲区，必须足够大 (最多 2*MAX_EXPR)
+ */
+static void build_display_string(const char *src, char *dst, size_t dst_size)
+{
+    size_t i = 0, j = 0;
+    while (src[i] && j < dst_size - 4) {  /* 留足空间 */
+        char ch = src[i];
+        if (ch == '*') {
+            /* × 的 UTF-8 编码: \xC3\x97 */
+            dst[j++] = '\xC3';
+            dst[j++] = '\x97';
+        } else if (ch == '/') {
+            /* ÷ 的 UTF-8 编码: \xC3\xB7 */
+            dst[j++] = '\xC3';
+            dst[j++] = '\xB7';
+        } else {
+            dst[j++] = ch;
+        }
+        i++;
+    }
+    dst[j] = '\0';
+}
+
 /* ---------- 绘制屏幕 UI ---------- */
 static void draw_screen(void)
 {
@@ -247,13 +272,10 @@ static void draw_screen(void)
     int display_height = 30;
     rb->lcd_drawrect(0, display_y, LCD_WIDTH, display_height);
 
-    /* 将内部 * / 转为显示 × ÷ */
-    char display_buf[MAX_EXPR];
-    strcpy(display_buf, expr);
-    for (int i = 0; display_buf[i]; i++) {
-        if (display_buf[i] == '*') display_buf[i] = '×';
-        else if (display_buf[i] == '/') display_buf[i] = '÷';
-    }
+    /* 将内部表达式转为显示格式（× ÷） */
+    char display_buf[MAX_DISPLAY];
+    build_display_string(expr, display_buf, sizeof(display_buf));
+
     rb->lcd_putsxy(5, display_y + 2, display_buf);
 
     /* ---- 数字行 (0~9) ---- */
@@ -318,8 +340,9 @@ enum plugin_status plugin_start(const void *parameter)
                 draw_screen();
                 break;
 
-            case BUTTON_NEXT:
-            case BUTTON_PREV:
+            /* 切换模式：上一曲/下一曲 (iPod 左/右) */
+            case BUTTON_LEFT:   /* 上一曲 */
+            case BUTTON_RIGHT:  /* 下一曲 */
                 mode_toggle();
                 draw_screen();
                 break;
@@ -329,7 +352,8 @@ enum plugin_status plugin_start(const void *parameter)
                 draw_screen();
                 break;
 
-            case BUTTON_RIGHT:
+            /* 移动光标：滚轮或方向键 */
+            case BUTTON_RIGHT:   /* 但我们已用 RIGHT 切换模式，所以这里不能用，改用滚轮 */
             case BUTTON_SCROLL_FWD:
                 move_cursor(1);
                 draw_screen();

@@ -242,3 +242,4 @@ test_viewports.c
 #endif /* HAVE_TEST_PLUGINS */
 ebook.c
 metronome_pro.c
+MyFirstPlugin.c

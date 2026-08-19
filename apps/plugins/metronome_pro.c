@@ -634,7 +634,7 @@ static void metro_check(void)
 {
     if (g.state != 1) return;
 
-    if (*rb->current_tick >= g.next_beat_tick) {
+    while (*rb->current_tick >= g.next_beat_tick) {
         metro_trigger();
 
         g.current_beat++;
@@ -899,6 +899,7 @@ static void handle_input(int btn, int pressed)
         switch (g.key_focus) {
             case 0: /* BPM */
                 g.bpm = MIN(g.bpm + BPM_STEP, BPM_MAX);
+				g.tick_interval = BPM_TO_TICKS(g.bpm);
                 break;
             case 1: /* TS */
                 g.ts = (g.ts + 1) % TS_NUM;
@@ -923,6 +924,7 @@ static void handle_input(int btn, int pressed)
         switch (g.key_focus) {
             case 0: /* BPM */
                 g.bpm = MAX(g.bpm - BPM_STEP, BPM_MIN);
+				g.tick_interval = BPM_TO_TICKS(g.bpm);
                 break;
             case 1: /* TS */
                 g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
@@ -978,19 +980,25 @@ static void handle_input(int btn, int pressed)
 
     /* 5. 其他按键：保留方向键支持（仅对有方向键的设备） */
     #ifdef BUTTON_LEFT
-    if (pressed & BUTTON_LEFT) {
-        if (g.key_focus == 0) g.bpm = MAX(g.bpm - 1, BPM_MIN);
-        else if (g.key_focus == 1) g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
-        g.key_feedback = FLASH_FRAMES;
-    }
-    #endif
-    #ifdef BUTTON_RIGHT
-    if (pressed & BUTTON_RIGHT) {
-        if (g.key_focus == 0) g.bpm = MIN(g.bpm + 1, BPM_MAX);
-        else if (g.key_focus == 1) g.ts = (g.ts + 1) % TS_NUM;
-        g.key_feedback = FLASH_FRAMES;
-    }
-    #endif
+	if (pressed & BUTTON_LEFT) {
+		if (g.key_focus == 0) {
+			g.bpm = MAX(g.bpm - 1, BPM_MIN);
+			g.tick_interval = BPM_TO_TICKS(g.bpm);
+		}
+		else if (g.key_focus == 1) g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
+		g.key_feedback = FLASH_FRAMES;
+	}
+	#endif
+	#ifdef BUTTON_RIGHT
+	if (pressed & BUTTON_RIGHT) {
+		if (g.key_focus == 0) {
+			g.bpm = MIN(g.bpm + 1, BPM_MAX);
+			g.tick_interval = BPM_TO_TICKS(g.bpm);
+		}
+		else if (g.key_focus == 1) g.ts = (g.ts + 1) % TS_NUM;
+		g.key_feedback = FLASH_FRAMES;
+	}
+	#endif
     #ifdef BUTTON_UP
 	if (pressed & BUTTON_UP) {
 		if (g.key_focus == 2) {
@@ -1058,9 +1066,9 @@ enum plugin_status plugin_start(const void *parameter)
     g.last_beat = -1;
     g.last_btn = 0;
 
-    /* 主循环: 100ms 轮询, 兼顾响应与功耗 */
+    /* 主循环: 20ms 轮询, 兼顾响应与功耗 */
     while (1) {
-        int btn = rb->button_get_w_tmo(HZ / 10);
+        int btn = rb->button_get_w_tmo(HZ / 50);
         int pressed = btn & ~g.last_btn;
         g.last_btn = btn;
 

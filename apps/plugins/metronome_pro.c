@@ -73,6 +73,7 @@
 #define ANIM_BEAT_FRAMES     6
 #define ANIM_PROG_SPEED      5
 #define ANIM_BREATHE_FRAMES  8
+#define FLASH_FRAMES         6
 
 /* ========== 最大拍数 ========== */
 #define MAX_BEATS  8
@@ -480,23 +481,21 @@ static void handle_input(int btn, int pressed)
 
     /* 1. 滚轮控制：始终调节 Swing 或 音量 (根据焦点) */
     if (pressed & BUTTON_SCROLL_FWD) {
-        if (g.edit_item == EDIT_SWING) {
+        if (g.key_focus == 3) {
             g.swing = MIN(g.swing + 5, 75);
         } else {
-            g.vol = MIN(g.vol + 1, 10);
+            g.volume = MIN(g.volume + 1, 10);
         }
-        g.flash_timer = FLASH_FRAMES;
-        g.flash_idx = g.edit_item;
+        g.key_feedback = FLASH_FRAMES;
         return;
     }
     if (pressed & BUTTON_SCROLL_BACK) {
-        if (g.edit_item == EDIT_SWING) {
+        if (g.key_focus == 3) {
             g.swing = MAX(g.swing - 5, 0);
         } else {
-            g.vol = MAX(g.vol - 1, 0);
+            g.volume = MAX(g.volume - 1, 0);
         }
-        g.flash_timer = FLASH_FRAMES;
-        g.flash_idx = g.edit_item;
+        g.key_feedback = FLASH_FRAMES;
         return;
     }
 
@@ -504,28 +503,34 @@ static void handle_input(int btn, int pressed)
     if (pressed & BUTTON_SELECT) {
         /* 简单双击检测：如果距离上次 < 400ms，视为 Tap */
         long now = *rb->current_tick;
-        if (now - g.last_tap_tick < HZ/2 && g.last_tap_tick != 0) {
-            tap_record(now);
-            g.last_tap_tick = 0; /* 重置，防止三连击 */
-        } else {
-            g.last_tap_tick = now;
-            g.edit_item = (g.edit_item + 1) % EDIT_COUNT;
-        }
-        g.flash_timer = FLASH_FRAMES;
-        g.flash_idx = g.edit_item;
+        tap_record();  // 无参数，内部用 tap_times[] 环形缓冲区
+		if (g.tap_count >= 2) {
+			g.bpm = g.tap_bpm;
+			g.tick_interval = BPM_TO_TICKS(g.bpm);
+			g.key_focus = 0;
+			g.key_feedback = 12;
+		} else {
+			g.key_focus = (g.key_focus + 1) % 4;
+			g.key_feedback = 6;
+		}
+        // 已删除重复的 g.key_feedback = FLASH_FRAMES;
         return;
     }
 
     /* 3. PLAY/PAUSE：开始/暂停 */
     if (pressed & BUTTON_PLAY) {
         metro_reset();
-        g.playing = !g.playing;
+        if (g.state == 1) {
+            g.state = 2;    // 暂停
+        } else {
+            g.state = 1;    // 播放
+            metro_reset();
+        }
         return;
     }
 
     /* 4. MENU：退出 */
     if (pressed & BUTTON_MENU) {
-        g.running = false;
         return;
     }
 
@@ -537,18 +542,16 @@ static void handle_input(int btn, int pressed)
     /* 如果非要保留 LEFT/RIGHT 逻辑（仅对有方向键的设备生效）： */
     #ifdef BUTTON_LEFT
     if (pressed & BUTTON_LEFT) {
-        if (g.edit_item == EDIT_BPM) g.bpm = MAX(g.bpm - 1, 30);
-        else if (g.edit_item == EDIT_TS) next_time_sig(-1);
-        g.flash_timer = FLASH_FRAMES;
-        g.flash_idx = g.edit_item;
+        if (g.key_focus == 0) g.bpm = MAX(g.bpm - 1, 30);
+        else { g.ts--; if(g.ts<0) g.ts=TS_NUM-1; }
+        g.key_feedback = FLASH_FRAMES;
     }
     #endif
     #ifdef BUTTON_RIGHT
     if (pressed & BUTTON_RIGHT) {
-        if (g.edit_item == EDIT_BPM) g.bpm = MIN(g.bpm + 1, 300);
-        else if (g.edit_item == EDIT_TS) next_time_sig(1);
-        g.flash_timer = FLASH_FRAMES;
-        g.flash_idx = g.edit_item;
+        if (g.key_focus == 0) g.bpm = MIN(g.bpm + 1, 300);
+        else { g.ts++; if(g.ts>=TS_NUM) g.ts=0; }
+        g.key_feedback = FLASH_FRAMES;
     }
     #endif
 }

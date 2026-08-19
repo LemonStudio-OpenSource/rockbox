@@ -846,111 +846,160 @@ static void play_tock(void)
 /* TODO: Could use more smart placement, using
    lcd_getstringsize() and such. */
 /* State: 0: blank/title, 1: tick, 2: tock 3: silent klick */
+/* State: 0: blank/title, 1: tick, 2: tock 3: silent klick */
 static void metronome_draw(struct screen* display, int state)
 {
     struct part *ps = part;
     char buf[32];
     int w, h;
+    int y = 0;
 
     display->set_background(C_BG);
     display->clear_display();
 
-    /* 顶部标题和状态 */
+    /* ===== 第一行：标题 + 拍号 + 状态 ===== */
     display->setfont(FONT_UI);
     display->set_foreground(C_FG);
-    display->putsxy(4, 2, (const unsigned char *)"Metro");
+    display->putsxy(4, y, (const unsigned char *)"节拍器");
+    display->getstringsize((const unsigned char *)"节拍器", &w, &h);
 
-    display->set_foreground(C_HL);
+    /* 拍号（居中偏右） */
     rb->snprintf(buf, sizeof(buf), "%u/%u", ps->beats_per_bar, ps->base_beat);
-    display->putsxy(100, 2, (const unsigned char *)buf);
+    display->set_foreground(C_HL);
+    display->putsxy(display->lcdwidth - 4 - display->getstringsize((const unsigned char *)buf, &w, &h),
+                    y, (const unsigned char *)buf);
 
+    /* 播放状态（最右） */
     if (sound_paused) {
         display->set_foreground(C_DIM);
-        display->putsxy(140, 2, (const unsigned char *)"||");
+        display->putsxy(display->lcdwidth - 4 - display->getstringsize((const unsigned char *)"||", &w, &h),
+                        y, (const unsigned char *)"||");
     } else {
         display->set_foreground(C_HL);
-        display->putsxy(140, 2, (const unsigned char *)">>");
+        display->putsxy(display->lcdwidth - 4 - display->getstringsize((const unsigned char *)"▶", &w, &h),
+                        y, (const unsigned char *)"▶");
+    }
+    y += h + 2;
+
+    /* ===== 第二行：段落标签（Track 模式） ===== */
+    if (track_mode && ps->label && rb->strlen(ps->label)) {
+        display->set_foreground(C_FG);
+        rb->snprintf(buf, sizeof(buf), "【%s】", ps->label);
+        display->putsxy((display->lcdwidth - display->getstringsize((const unsigned char *)buf, &w, &h)) / 2,
+                        y, (const unsigned char *)buf);
+        y += h + 2;
     }
 
-    /* 节拍圆点（基于 beat 和 part->pattern） */
+    /* ===== 第三行：段落/小节进度（Track 模式）或小节进度（简单模式） ===== */
+    display->set_foreground(C_DIM);
+    if (track_mode) {
+        if (ps->bars)
+            rb->snprintf(buf, sizeof(buf), "段落 %u/%u  小节 %u/%u+%u",
+                         part->id + 1, parts, bar + 1, ps->bars, beat + 1);
+        else
+            rb->snprintf(buf, sizeof(buf), "段落 %u/%u  小节 %u/_+%u",
+                         part->id + 1, parts, bar + 1, beat + 1);
+    } else {
+        rb->snprintf(buf, sizeof(buf), "小节 %u", bar + 1);
+    }
+    display->putsxy((display->lcdwidth - display->getstringsize((const unsigned char *)buf, &w, &h)) / 2,
+                    y, (const unsigned char *)buf);
+    y += h + 4;
+
+    /* ===== 节拍圆点（基于 beat 和 pattern） ===== */
     int beats = ps->beats_per_bar;
     int dot_r = 7;
     int dot_gap = 24;
     int total_w = (beats - 1) * dot_gap;
     int x0 = (display->lcdwidth - total_w) / 2;
-    int y_dot = 28;
+    int cy = y + dot_r;
+    y += dot_r * 2 + 4;
 
     for (int i = 0; i < beats; i++) {
         int cx = x0 + i * dot_gap;
-        int cy = y_dot + dot_r;
         char pat = (ps->pattern && i < beats) ? ps->pattern[i] : 'x';
-        int col = (pat == 'X') ? C_RED : (pat == 'x') ? C_BLU : C_DIM;
+        int col;
+        if (pat == 'X')
+            col = C_RED;
+        else if (pat == 'x')
+            col = C_BLU;
+        else
+            col = C_DIM;  // 静音拍用灰色
 
         if (i == beat && !sound_paused) {
+            /* 当前拍：实心 + 外描边 */
             display->set_foreground(col);
-            display->fillrect(cx - dot_r, cy - dot_r, dot_r*2, dot_r*2);
+            display->fillrect(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2);
             display->set_foreground(C_BG);
-            display->drawrect(cx - dot_r - 1, cy - dot_r - 1, dot_r*2+2, dot_r*2+2);
+            display->drawrect(cx - dot_r - 1, cy - dot_r - 1, dot_r * 2 + 2, dot_r * 2 + 2);
             display->set_foreground(col);
         } else if (i < beat && !sound_paused) {
+            /* 已过拍：灰色实心 */
             display->set_foreground(C_LGRY);
-            display->fillrect(cx - dot_r, cy - dot_r, dot_r*2, dot_r*2);
+            display->fillrect(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2);
         } else {
-            display->set_foreground(C_DIM);
-            display->drawrect(cx - dot_r, cy - dot_r, dot_r*2, dot_r*2);
+            /* 未到拍：空心轮廓（静音拍也是空心轮廓，但用更淡的颜色） */
+            if (pat == '.')
+                display->set_foreground(C_DIM);
+            else
+                display->set_foreground(C_DIM);
+            display->drawrect(cx - dot_r, cy - dot_r, dot_r * 2, dot_r * 2);
         }
     }
 
-    /* BPM 数字 */
+    /* ===== BPM 大数字 ===== */
     display->setfont(FONT_SYSFIXED);
     display->set_foreground(C_FG);
     rb->snprintf(buf, sizeof(buf), "%d", bpm);
     display->getstringsize((const unsigned char *)buf, &w, &h);
-    display->putsxy((display->lcdwidth - w) / 2, 48, (const unsigned char *)buf);
+    display->putsxy((display->lcdwidth - w) / 2, y, (const unsigned char *)buf);
+    y += h;
     display->setfont(FONT_UI);
     display->set_foreground(C_DIM);
-    display->putsxy((display->lcdwidth - 24) / 2, 62, (const unsigned char *)"BPM");
+    display->putsxy((display->lcdwidth - display->getstringsize((const unsigned char *)"BPM", &w, &h)) / 2,
+                    y, (const unsigned char *)"BPM");
+    y += h + 4;
 
-    /* 进度条（简化） */
-    int bar_x = 10;
-    int bar_w = display->lcdwidth - 20;
-    display->set_foreground(C_DIM);
-    display->fillrect(bar_x, 74, bar_w, 4);
-
-    /* 底部参数（简化显示 BPM、拍号、音量） */
-    int y_label = 88;
-    int y_value = 102;
+    /* ===== 底部参数栏（四个标签：速度、拍号、音量、模式） ===== */
+    int y_label = y;
+    int y_value = y + 14;
     int col_w = display->lcdwidth / 4;
-    const char *labels[4] = {"BPM", "TS", "VOL", "SW"};
-    for (int i = 0; i < 4; i++) {
-        int cx = i * col_w + col_w / 2;
-        display->setfont(FONT_UI);
-        display->set_foreground(C_DIM);
-        display->putsxy(cx - display->getstringsize((const unsigned char *)labels[i], &w, &h) / 2,
-                        y_label, (const unsigned char *)labels[i]);
-    }
-
+    const char *labels[4] = {"速度", "拍号", "音量", "模式"};
+    const char *values[4];
     static char vbuf[4][8];
+
     rb->snprintf(vbuf[0], 8, "%d", bpm);
     rb->snprintf(vbuf[1], 8, "%u/%u", ps->beats_per_bar, ps->base_beat);
     rb->snprintf(vbuf[2], 8, "%d", rb->global_status->volume);
-    rb->snprintf(vbuf[3], 8, "%d", 50);  // 占位
-    const char *values[4] = {vbuf[0], vbuf[1], vbuf[2], vbuf[3]};
+    rb->snprintf(vbuf[3], 8, "%s", track_mode ? "曲谱" : "简易");
+
+    values[0] = vbuf[0];
+    values[1] = vbuf[1];
+    values[2] = vbuf[2];
+    values[3] = vbuf[3];
+
+    display->setfont(FONT_UI);
     for (int i = 0; i < 4; i++) {
         int cx = i * col_w + col_w / 2;
         display->set_foreground(C_DIM);
+        display->putsxy(cx - display->getstringsize((const unsigned char *)labels[i], &w, &h) / 2,
+                        y_label, (const unsigned char *)labels[i]);
+        display->set_foreground(C_FG);
         display->putsxy(cx - display->getstringsize((const unsigned char *)values[i], &w, &h) / 2,
                         y_value, (const unsigned char *)values[i]);
     }
+    y = y_value + h + 4;
 
-    /* 底部提示 */
+    /* ===== 底部操作提示 ===== */
     display->set_foreground(C_DIM);
-    display->putsxy(4, display->lcdheight - 12,
-                    (const unsigned char *)"PLAY:Start SEL:TAP L/R:BPM U/D:Vol");
+    display->setfont(FONT_UI);
+    const char *help = "长按选择 启动/暂停  ◀ ▶ 调速度  滚轮 调音量  点按选择 打点";
+    display->putsxy((display->lcdwidth - display->getstringsize((const unsigned char *)help, &w, &h)) / 2,
+                    display->lcdheight - h - 2,
+                    (const unsigned char *)help);
 
     display->update();
 }
-
 /* Trigger drawing of display at the next occasion using given state. */
 static void trigger_display(int state)
 {

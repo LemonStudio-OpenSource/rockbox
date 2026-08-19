@@ -475,103 +475,82 @@ static void draw_ui(void)
 
 static void handle_input(int btn, int pressed)
 {
-    /* SELECT: 单击切换焦点, 双击 Tap Tempo */
-    if (pressed & BUTTON_SELECT) {
-        tap_record();
-        if (g.tap_count >= 2) {
-            /* 双击: 设置 BPM */
-            g.bpm = g.tap_bpm;
-            g.tick_interval = BPM_TO_TICKS(g.bpm);
-            g.key_focus = 0;
-            g.key_feedback = 12;
-        } else {
-            /* 单击: 切换编辑焦点 */
-            g.key_focus = (g.key_focus + 1) % 4;
-            g.key_feedback = 6;
-        }
-    }
+    /* 防止未使用参数警告 */
+    (void)btn;
 
-    /* PLAY: 开始/暂停 */
-    if (pressed & BUTTON_PLAY) {
-        if (g.state == 1) {
-            g.state = 2;    /* 暂停 */
+    /* 1. 滚轮控制：始终调节 Swing 或 音量 (根据焦点) */
+    if (pressed & BUTTON_SCROLL_FWD) {
+        if (g.edit_item == EDIT_SWING) {
+            g.swing = MIN(g.swing + 5, 75);
         } else {
-            g.state = 1;    /* 播放 */
-            metro_reset();
+            g.vol = MIN(g.vol + 1, 10);
         }
-    }
-
-    /* MENU: 退出 */
-    if (pressed & BUTTON_MENU)
+        g.flash_timer = FLASH_FRAMES;
+        g.flash_idx = g.edit_item;
         return;
+    }
+    if (pressed & BUTTON_SCROLL_BACK) {
+        if (g.edit_item == EDIT_SWING) {
+            g.swing = MAX(g.swing - 5, 0);
+        } else {
+            g.vol = MAX(g.vol - 1, 0);
+        }
+        g.flash_timer = FLASH_FRAMES;
+        g.flash_idx = g.edit_item;
+        return;
+    }
 
-    /* LEFT/RIGHT: 调整当前焦点参数 */
+    /* 2. SELECT (中心键)：切换焦点 / Tap Tempo */
+    if (pressed & BUTTON_SELECT) {
+        /* 简单双击检测：如果距离上次 < 400ms，视为 Tap */
+        long now = *rb->current_tick;
+        if (now - g.last_tap_tick < HZ/2 && g.last_tap_tick != 0) {
+            tap_record(now);
+            g.last_tap_tick = 0; /* 重置，防止三连击 */
+        } else {
+            g.last_tap_tick = now;
+            g.edit_item = (g.edit_item + 1) % EDIT_COUNT;
+        }
+        g.flash_timer = FLASH_FRAMES;
+        g.flash_idx = g.edit_item;
+        return;
+    }
+
+    /* 3. PLAY/PAUSE：开始/暂停 */
+    if (pressed & BUTTON_PLAY) {
+        metro_reset();
+        g.playing = !g.playing;
+        return;
+    }
+
+    /* 4. MENU：退出 */
+    if (pressed & BUTTON_MENU) {
+        g.running = false;
+        return;
+    }
+
+    /* 5. 其他按键：根据当前焦点调整 */
+    /* 注意：iPod Classic 没有 LEFT/RIGHT 物理按键，
+       这里用 SCROLL 配合 SELECT 切换焦点来调整，
+       或者你可以用 BUTTON_SCROLL_FWD/BACK 配合 BUTTON_SELECT 按住来快速调 */
+    
+    /* 如果非要保留 LEFT/RIGHT 逻辑（仅对有方向键的设备生效）： */
+    #ifdef BUTTON_LEFT
     if (pressed & BUTTON_LEFT) {
-        switch (g.key_focus) {
-            case 0: /* BPM */
-                g.bpm--;
-                if (g.bpm < BPM_MIN) g.bpm = BPM_MIN;
-                break;
-            case 1: /* TS */
-                g.ts--;
-                if (g.ts < 0) g.ts = TS_NUM - 1;
-                break;
-            case 2: /* Vol */
-                g.volume--;
-                if (g.volume < VOL_MIN) g.volume = VOL_MIN;
-                break;
-            case 3: /* SW */
-                g.swing -= 5;
-                if (g.swing < SWING_MIN) g.swing = SWING_MIN;
-                break;
-        }
-        g.key_feedback = 6;
+        if (g.edit_item == EDIT_BPM) g.bpm = MAX(g.bpm - 1, 30);
+        else if (g.edit_item == EDIT_TS) next_time_sig(-1);
+        g.flash_timer = FLASH_FRAMES;
+        g.flash_idx = g.edit_item;
     }
+    #endif
+    #ifdef BUTTON_RIGHT
     if (pressed & BUTTON_RIGHT) {
-        switch (g.key_focus) {
-            case 0: /* BPM */
-                g.bpm++;
-                if (g.bpm > BPM_MAX) g.bpm = BPM_MAX;
-                break;
-            case 1: /* TS */
-                g.ts++;
-                if (g.ts >= TS_NUM) g.ts = 0;
-                break;
-            case 2: /* Vol */
-                g.volume++;
-                if (g.volume > VOL_MAX) g.volume = VOL_MAX;
-                break;
-            case 3: /* SW */
-                g.swing += 5;
-                if (g.swing > SWING_MAX) g.swing = SWING_MAX;
-                break;
-        }
-        g.key_feedback = 6;
+        if (g.edit_item == EDIT_BPM) g.bpm = MIN(g.bpm + 1, 300);
+        else if (g.edit_item == EDIT_TS) next_time_sig(1);
+        g.flash_timer = FLASH_FRAMES;
+        g.flash_idx = g.edit_item;
     }
-
-    /* UP/DOWN: 始终调节音量 */
-    if (pressed & BUTTON_UP) {
-        g.volume++;
-        if (g.volume > VOL_MAX) g.volume = VOL_MAX;
-        g.key_feedback = 6;
-    }
-    if (pressed & BUTTON_DOWN) {
-        g.volume--;
-        if (g.volume < VOL_MIN) g.volume = VOL_MIN;
-        g.key_feedback = 6;
-    }
-
-    /* 滚轮: 始终调节 Swing */
-    if (pressed & (BUTTON_SCROLL_FWD | BUTTON_SCROLLWHEEL_UP)) {
-        g.swing += 5;
-        if (g.swing > SWING_MAX) g.swing = SWING_MAX;
-        g.key_feedback = 6;
-    }
-    if (pressed & (BUTTON_SCROLL_BACK | BUTTON_SCROLLWHEEL_DOWN)) {
-        g.swing -= 5;
-        if (g.swing < SWING_MIN) g.swing = SWING_MIN;
-        g.key_feedback = 6;
-    }
+    #endif
 }
 
 /* ========== 主入口 ========== */

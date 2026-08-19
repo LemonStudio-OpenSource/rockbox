@@ -1,100 +1,142 @@
 /***************************************************************************
- *  Metronome Pro - Rockbox Plugin
+ *             __________               __   ___.
+ *   Open      \______   \ ____   ____ |  | _\_ |__   _______  ___
+ *   Source     |       _//  _ \_/ ___\|  |/ /| __ \ /  _ \  \/  /
+ *   Jukebox    |    |   (  <_> )  \___|    < | \_\ (  <_> > <  <
+ *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
+ *                     \/            \/     \/    \/            \/
  *
- *  基于原始 metronome.c 音频引擎 + Kimi 暗色 UI 设计 + 增强动画
+ * Copyright (C) 2004 Matthias Wientapper, 2014-2015 Thomas Orgis
  *
- *  功能特性:
- *  - 暗色主题 + 重音颜色编码 (强拍=红, 次强=橙, 弱拍=蓝)
- *  - 节拍缩放缓动动画 (Beat Scale Easing)
- *  - BPM 数字呼吸效果 (BPM Breathing on Strong Beats)
- *  - 节拍进度条 (Progress Arc)
- *  - 子拍进度指示器 (Sub-beat Progress)
- *  - 双击 SELECT 打点调速 (Tap Tempo)
- *  - 摇摆节奏支持 (Swing Rhythm)
- *  - 渐进加速模式 (Gradual Tempo Acceleration)
- *  - 静默小节训练 (Silent Bar Training)
- *  - 6种拍号: 2/4, 3/4, 4/4, 6/8, 5/4, 7/8
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- *  音频: 使用 rb->beep_play() (与 Kimi 代码一致，适合 iPod 性能)
- *  UI: 暗色主题 + 微交互动画
- *  目标: iPod Color (160x160) 及其他 Rockbox 设备
+ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
+ * KIND, either express or implied.
  *
- *  注意: 不要自行定义 PLUGIN_HEADER 和 rb
- *        这些由固件通过 plugin.h 提供，重复定义会导致编译错误
- ***************************************************************************/
-
+ * TODO:
+ *  - Think about generating the sounds on startup with SWCODEC.
+ ****************************************************************************/
 #include "plugin.h"
+#include "lib/pluginlib_actions.h"
+#include "lib/pluginlib_exit.h"
+#include "fixedpoint.h"
 
+/* ========== 暗色主题颜色 ========== */
+#define C_BG     LCD_RGBPACK(0,   0,   0)
+#define C_FG     LCD_RGBPACK(255, 255, 255)
+#define C_RED    LCD_RGBPACK(255, 50,  50)
+#define C_ORG    LCD_RGBPACK(255, 180, 40)
+#define C_BLU    LCD_RGBPACK(50,  150, 255)
+#define C_DIM    LCD_RGBPACK(200, 200, 200)
+#define C_LGRY   LCD_RGBPACK(180, 180, 180)
+#define C_HL     LCD_RGBPACK(50,  255, 100)
 
-/* ========== 屏幕尺寸 (iPod Color: 160x160) ========== */
-#define LCD_W  160
-#define LCD_H  160
+/* About time resolution:
+    1000 means 1 ms resolution. It should get better with higher values
+    in theory, but in practice, too small timer intervals increase the
+    chance of being missed and make the metronome lag behind. Mean tempo
+    still works out with very small divider values (29 even) as long as
+    the rounding error compensation is active, although beat intervals
+    become jerky. You compromise between long-term accuracy and steadyness
+    from one beat to the next.
 
-/* ========== 颜色 (RGB565 via LCD_RGBPACK) ========== */
-#define C_BG     LCD_RGBPACK(0,   0,   0)     /* 纯黑背景 */
-#define C_FG     LCD_RGBPACK(255, 255, 255)   /* 白色文字 */
-#define C_RED    LCD_RGBPACK(255, 50,  50)    /* 红色 - 强拍 */
-#define C_ORG    LCD_RGBPACK(255, 180, 40)    /* 橙色 - 次强拍 */
-#define C_BLU    LCD_RGBPACK(50,  150, 255)   /* 蓝色 - 弱拍 */
-#define C_DIM    LCD_RGBPACK(200, 200, 200)   /* 亮灰色文字 */
-#define C_LGRY   LCD_RGBPACK(180, 180, 180)   /* 亮灰 - 已过拍 */
-#define C_HL     LCD_RGBPACK(50,  255, 100)   /* 亮绿 - 高亮/激活 */
+    A drift you have to accept comes just from the audio clock itself, or even
+    from the difference between clocks in the device. The Sansa Clip+ has around
+    0.04 % error in audio frequency using the "good" PLLB. I presume that the
+    difference between timing using PLLA and PLLB is at least that big. Something
+    up to 40 ms time difference over one minute when comparing to an external
+    reference or just the metronome plugin with playback of a prepared PCM track
+    is to be expected.
 
-/* ========== BPM 范围 ========== */
-#define BPM_MIN  20
-#define BPM_MAX  280
-#define BPM_DEF  120
+    Also, since playback on SWCODEC is not allowed to happen inside the timer
+    callback, there is a delay introduced by the main loop scheduling. This
+    could be compensated for by delaying the audio depending on a counter
+    incremented since the period elapsed in the callback, at the price of
+    putting the display out of sync. On a Clip+, the schedule delay isn't
+    biggest problem (drift for fine timer resolution is).
 
-/* ========== 音量范围 (0-255 对应 beep_play 振幅) ========== */
-#define VOL_MIN  0
-#define VOL_MAX  255
-#define VOL_DEF  200
+    All in all, 1 ms is too small, 2 ms seems to work fine ...
+    4 ms might still be cool, too.
+*/
+#if defined(SIMULATOR)
+/* Simulator really wants 1024. Not 1000, not 512, only 1024.
+   Otherwise it is strangely slow. */
+static const unsigned int timerfreq_div = 1024;
+#else
+static const unsigned int timerfreq_div = 500; /* 2 ms resolution */
+#endif
+/* actual (not quarter) beats per minute above which display blinking
+   is deactivated (since it is not needed anymore and because of performance
+   issues) */
+static const unsigned int blinklimit = 135;
 
-/* ========== 摇摆范围 ========== */
-#define SWING_MIN  0
-#define SWING_MAX  100
-#define SWING_DEF  50
+enum metronome_errors
+{
+    MERR_NOTHING = 0
+,   MERR_MISSING
+,   MERR_OOM
+,   MERR_TEMPO
+,   MERR_METER
+,   MERR_VOLUME
+,   MERR_PATTERN
+};
 
-/* ========== 渐进加速 ========== */
-#define GRAD_MIN    0
-#define GRAD_MAX    10
-#define GRAD_DEF    0
-#define GRAD_STEP   5
+#define PART_MAX 10 /* maximum count of programmed parts */
 
-/* ========== 静默小节 ========== */
-#define SILENT_MIN  0
-#define SILENT_MAX  4
-#define SILENT_DEF  0
+#if (CONFIG_KEYPAD == IRIVER_H100_PAD) || (CONFIG_KEYPAD == IRIVER_H300_PAD) \
+ || (CONFIG_KEYPAD == SANSA_E200_PAD)  || (CONFIG_KEYPAD == SAMSUNG_YH820_PAD)
+#define MET_SYNC
+#endif
 
-/* ========== 计时 ========== */
-#define BPM_TO_TICKS(bpm)  ((60 * HZ) / (bpm))
+#if (CONFIG_KEYPAD == IPOD_1G2G_PAD) \
+    || (CONFIG_KEYPAD == IPOD_3G_PAD) \
+    || (CONFIG_KEYPAD == IPOD_4G_PAD)
+#define METRONOME_QUIT          PLA_UP
+#else
+#define METRONOME_QUIT          PLA_EXIT
+#endif
 
-/* ========== 动画常量 ========== */
-#define ANIM_BEAT_FRAMES     6
-#define ANIM_PROG_SPEED      5
-#define ANIM_BREATHE_FRAMES  8
-#define FLASH_FRAMES         6
+#ifdef HAVE_SCROLLWHEEL
+#define METRONOME_VOL_UP        PLA_SCROLL_FWD
+#define METRONOME_VOL_UP_REP    PLA_SCROLL_FWD_REPEAT
+#define METRONOME_VOL_DOWN      PLA_SCROLL_BACK
+#define METRONOME_VOL_DOWN_REP  PLA_SCROLL_BACK_REPEAT
+#else
+#define METRONOME_VOL_UP        PLA_UP
+#define METRONOME_VOL_DOWN      PLA_DOWN
+#define METRONOME_VOL_UP_REP    PLA_UP_REPEAT
+#define METRONOME_VOL_DOWN_REP  PLA_DOWN_REPEAT
+#endif
+#define METRONOME_LEFT          PLA_LEFT
+#define METRONOME_RIGHT         PLA_RIGHT
+#define METRONOME_LEFT_REP      PLA_LEFT_REPEAT
+#define METRONOME_RIGHT_REP     PLA_RIGHT_REPEAT
+#define METRONOME_TAP           PLA_SELECT_REL
+#define METRONOME_PAUSE         PLA_CANCEL
+#define METRONOME_PLAY          PLA_SELECT_REPEAT
 
-/* ========== 最大拍数 ========== */
-#define MAX_BEATS  8
+#define METRONOME_START         PLA_SELECT
 
-/* ========== Tap Tempo ========== */
-#define TAP_HISTORY  8
-#define TAP_TIMEOUT  (HZ / 2)   /* 500ms 内为双击 */
+#ifdef MET_SYNC
+enum{ METRONOME_SYNC  = LAST_PLUGINLIB_ACTION+1 };
+static const struct button_mapping iriver_syncaction[] =
+{
+    { METRONOME_SYNC, BUTTON_REC, BUTTON_NONE },
+    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_PLUGIN)
+};
+#endif /* IRIVER_H100_PAD||IRIVER_H300_PAD */
 
-/* ========== 步进统一管理 ========== */
-#define VOL_STEP  1
-#define BPM_STEP  1
-
-/* ========== 定时器分频 ========== */
-#define TIMER_DIV   500         /* 2ms 分辨率 */
-#define TIMER_PERIOD (TIMER_FREQ / TIMER_DIV)  /* 定时器周期滴答数 */
-
-/* 全局状态扩展 */
-static unsigned int minitick = 0;
-static unsigned int period = 0;
-static volatile bool sound_trigger = false;
-static bool timer_running = false;
+const struct button_mapping *plugin_contexts[] =
+{
+    pla_main_ctx,
+#if defined(MET_SYNC)
+    iriver_syncaction,
+#endif
+};
+#define PLA_ARRAY_COUNT sizeof(plugin_contexts)/sizeof(plugin_contexts[0])
 
 /* raw PCM */
 static signed short tick_sound[] =
@@ -478,679 +520,1221 @@ static signed short tock_sound[] =
 ,-2,3
 };
 
-/* 立体声缓冲（单声道 → 交错立体声） */
-/* 计算样本数 */
-#define TICK_SAMPLES  (sizeof(tick_sound) / sizeof(signed short))
-#define TOCK_SAMPLES  (sizeof(tock_sound) / sizeof(signed short))
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+    Utilities from pdbox plugin (Copyright (C) 2009 Wincent Balin) --- am I
+    supposed to supply these functions with the plugin? Should I use a library?
+* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-/* 立体声缓冲（单声道 → 交错立体声） */
-static short tick_buf[TICK_SAMPLES * 2];
-static short tock_buf[TOCK_SAMPLES * 2];
+/* Implementation of strtod() and atof(),
+   taken from SanOS (http://www.jbox.dk/sanos/). */
+static int rb_errno = 0;
 
+static double rb_strtod(const char *str, char **endptr)
+{
+    double number;
+    int exponent;
+    int negative;
+    char *p = (char *) str;
+    double p10;
+    int n;
+    int num_digits;
+    int num_decimals;
+
+    /* Reset Rockbox errno -- W.B. */
+#ifdef ROCKBOX
+    rb_errno = 0;
+#endif
+
+    // Skip leading whitespace
+    while (isspace(*p)) p++;
+
+    // Handle optional sign
+    negative = 0;
+    switch (*p)
+    {
+        case '-': negative = 1; // Fall through to increment position
+        case '+': p++;
+    }
+
+    number = 0.;
+    exponent = 0;
+    num_digits = 0;
+    num_decimals = 0;
+
+    // Process string of digits
+    while (isdigit(*p))
+    {
+        number = number * 10. + (*p - '0');
+        p++;
+        num_digits++;
+    }
+
+    // Process decimal part
+    if (*p == '.')
+    {
+        p++;
+
+        while (isdigit(*p))
+        {
+            number = number * 10. + (*p - '0');
+            p++;
+            num_digits++;
+            num_decimals++;
+        }
+
+        exponent -= num_decimals;
+    }
+
+    if (num_digits == 0)
+    {
+#ifdef ROCKBOX
+        rb_errno = 1;
+#else
+        errno = ERANGE;
+#endif
+        return 0.0;
+    }
+
+    // Correct for sign
+    if (negative) number = -number;
+
+    // Process an exponent string
+    if (*p == 'e' || *p == 'E')
+    {
+        // Handle optional sign
+        negative = 0;
+        switch(*++p)
+        {
+            case '-': negative = 1;   // Fall through to increment pos
+            case '+': p++;
+        }
+
+        // Process string of digits
+        n = 0;
+        while (isdigit(*p))
+        {
+            n = n * 10 + (*p - '0');
+            p++;
+        }
+
+        if (negative)
+            exponent -= n;
+        else
+            exponent += n;
+    }
+
+#ifndef ROCKBOX
+    if (exponent < DBL_MIN_EXP || exponent > DBL_MAX_EXP)
+    {
+        errno = ERANGE;
+        return HUGE_VAL;
+    }
+#endif
+
+    // Scale the result
+    p10 = 10.;
+    n = exponent;
+    if (n < 0) n = -n;
+    while (n)
+    {
+        if (n & 1)
+        {
+            if (exponent < 0)
+                number /= p10;
+            else
+                number *= p10;
+        }
+        n >>= 1;
+        p10 *= p10;
+    }
+
+#ifndef ROCKBOX
+    if (number == HUGE_VAL) errno = ERANGE;
+#endif
+    if (endptr) *endptr = p;
+
+    return number;
+}
+
+static double rb_atof(const char *str)
+{
+    return rb_strtod(str, NULL);
+}
+
+/* * * * * * * * * * * * * * * * * * * * * * *
+           Actual metronome stuff
+* * * * * * * * * * * * * * * * * * * * * * */
+
+static int fd = -1; /* file descriptor, global for cleanup(). */
+
+/* Round fixed-point number to integer. */
+static int fp_rint(long fp_num)
+{
+    fp_num += fp_num > 0 ? +((long)1<<15) : -((long)1<<15);
+    return (int)(fp_num / ((long)1<<16));
+}
+/* float to fixed-point */
+static long fp_frac(float fl_num)
+{
+    return (long)(fl_num*((long)1<<16));
+}
+
+/* simple dynamic memory management
+    - only allocate blocks serially
+    - deallocation of most recent blocks by resetting the free region pointer
+    - everything aligned to 4 bytes (wasting some bytes, but playing safe)
+*/
+static void *mem_begin = NULL; /* beginning of managed region. */
+static void *mem_end = NULL;   /* just after end of managed region */
+static void *mem_free_region = NULL; /* pointer to unused free space */
+static void *mem_checkpointer = NULL; /* position to reset to */
+
+/* Initialize memory management. */
+static void mem_init(void)
+{
+    size_t bufsize;
+    /* Can I trust that pointer to be aligned? Better be safe. */
+    mem_begin = ALIGN_UP(rb->plugin_get_buffer(&bufsize), 4);
+    mem_end = mem_begin + bufsize - 3;
+    mem_free_region = mem_begin;
+    mem_checkpointer = mem_begin;
+}
+
+/* Remember and reset free region, for temporary mem usage. */
+static void mem_checkpoint(void){ mem_checkpointer = mem_free_region; }
+static void mem_reset     (void){ mem_free_region = mem_checkpointer; }
+static void *mem_allocate(size_t bytes)
+{
+    void *handout = mem_free_region;
+    /* Always handing out multiples of alignment size. */
+    if(bytes % 4) bytes += 4 - bytes % 4;
+    if(mem_free_region + bytes >= mem_end)
+    {
+        rb->splash(2*HZ, "Out Of Memory");
+        return NULL;
+    }
+    mem_free_region += bytes;
+    return handout;
+}
+
+struct part;
+struct part /* One part of a track, with one tempo (range), meter, etc. */
+{
+    struct part *prev, *next; /* linked list links*/
+    unsigned int id;            /* index (in order, please) */
+    char *label;
+    unsigned int bars;          /* Duration of part in bars. */
+    unsigned int beats_per_bar; /* 3 in 3/4 */
+    unsigned int base_beat;     /* 4 in 3/4 to adjust bpm value */
+    unsigned int bpm;           /* base tempo (1/4 notes per minute) */
+    unsigned int bpm2;          /* end tempo  */
+    unsigned int *beat_bpm;     /* either NULL or (bars*beats_per_bar) values */
+    long accel;                 /* fixed-point acceleration in 1/min (really) */
+    int volume;                 /* volume offset in integer dB */
+    /* Store pattern characters verbatim for max. 64 beats (no string
+       termination). One could save storage here by encoding things in bits,
+       or by allocating dynamically to begin with. */
+    char *pattern;
+};
+
+static struct part *part_list = NULL; /* linked list of parts */
+static struct part *part      = NULL; /* current part */
+static unsigned int parts     = 0; /* total number of parts */
+static unsigned int bad_parts = 0; /* Count parts with parsing errors. */
+
+/* Initialize a part that is not yet placed into the list. */
+static void part_init(struct part *ps)
+{
+    ps->prev = NULL;
+    ps->next = NULL;
+    ps->id = 0;
+    ps->label = NULL;
+    ps->bars = 0;
+    ps->beats_per_bar = 4;
+    ps->base_beat = 4;
+    ps->bpm = 120;
+    ps->bpm2 = 120;
+    ps->beat_bpm = NULL;
+    ps->accel = 0;
+    ps->volume = 0;
+    ps->pattern = NULL;
+}
+
+/* Add to the list. */
+static void part_add(struct part *ps)
+{
+    if(part)
+    {
+        part->next = ps;
+        ps->prev = part;
+        part = ps;
+    }
+    else part = part_list = ps;
+
+    ps->id = parts++;
+}
+
+/* Stay away from zero. */
+static unsigned int positive(long long value)
+{
+    return value > 0 ? value : 1;
+}
+
+/* Yay! Global state variables! */
+static bool track_mode = false; /* switch for programmed tracks metronome */
+static int loop = 0; /* Needed? */
+static unsigned int beat = 0;
+static unsigned int bar  = 0; /* How big shall this become? */
+/* The currently (approximate) active bpm value, set from calc_period(). */
+static unsigned int bpm = 1;
+
+/* Should be unsigned? */
+static unsigned int period   = 0; /* beat interval in timer ticks */
+static long period_diff      = 0; /* fixed-point error of last period computation */
+static unsigned int minitick = 0; /* elapsed ticks */
+static bool beating = false; /* A beat is/was playing and count needs to increase. */
+static int display_state    = 0; /* Current display state code. */
+static bool display_trigger = false; /* Draw display on next occasion */
+
+static bool sound_paused = true;
+
+/* global static buffer for messages in any situation */
+static char buffer[64];
+/* For line parsing, more is needed, allocated on demand.
+   As my memory management doesn't allow to free it, keeping it local
+   ist not smart. */
+static char* linebuf = NULL;
+size_t linebuf_size  = 0;
+
+
+/* global state for tempo tapping */
+static bool reset_tap = false;
+static int tap_count    = 0;
+static int tap_time     = 0;
+static int tap_timeout  = 0;
+
+static int bpm_step_counter = 0;
+
+static bool sound_trigger = false;
+
+/* Really necessary? Cannot just play mono?
+   Also: This is wasted memory! */
+static short tick_buf[sizeof(tick_sound)*2];
+static short tock_buf[sizeof(tock_sound)*2];
+
+/* Convert the mono samples to interleaved stereo */
 static void prepare_buffers(void)
 {
     size_t i;
-    for (i = 0; i < sizeof(tick_sound)/sizeof(short); i++) {
-        tick_buf[i*2]   = tick_sound[i];
-        tick_buf[i*2+1] = tick_sound[i];
-    }
-    for (i = 0; i < sizeof(tock_sound)/sizeof(short); i++) {
-        tock_buf[i*2]   = tock_sound[i];
-        tock_buf[i*2+1] = tock_sound[i];
-    }
+    for(i = 0;i < sizeof(tick_sound)/sizeof(short);i++)
+      tick_buf[i*2] = tick_buf[i*2+1] = tick_sound[i];
+    for(i = 0;i < sizeof(tock_sound)/sizeof(short);i++)
+      tock_buf[i*2] = tock_buf[i*2+1] = tock_sound[i];
 }
 
-
-
-
-/* ========== 拍号定义 ========== */
-enum time_signature {
-    TS_2_4 = 0,
-    TS_3_4,
-    TS_4_4,
-    TS_6_8,
-    TS_5_4,
-    TS_7_8,
-    TS_NUM
-};
-
-static const int ts_beats[TS_NUM] = {2, 3, 4, 6, 5, 7};
-static const char *ts_names[TS_NUM] = {"2/4", "3/4", "4/4", "6/8", "5/4", "7/8"};
-
-/* ========== 重音类型 ========== */
-enum accent {
-    ACCENT_NONE = 0,
-    ACCENT_WEAK,
-    ACCENT_MEDIUM,
-    ACCENT_STRONG
-};
-
-/* 各拍号的重音模式表 (每行最多 MAX_BEATS 个元素) */
-static const int ts_accents[TS_NUM][MAX_BEATS] = {
-    /* 2/4 */  {ACCENT_STRONG, ACCENT_WEAK,  0, 0, 0, 0, 0, 0},
-    /* 3/4 */  {ACCENT_STRONG, ACCENT_WEAK,  ACCENT_WEAK, 0, 0, 0, 0, 0},
-    /* 4/4 */  {ACCENT_STRONG, ACCENT_WEAK,  ACCENT_MEDIUM, ACCENT_WEAK, 0, 0, 0, 0},
-    /* 6/8 */  {ACCENT_STRONG, ACCENT_WEAK,  ACCENT_WEAK, ACCENT_MEDIUM, ACCENT_WEAK, ACCENT_WEAK, 0, 0},
-    /* 5/4 */  {ACCENT_STRONG, ACCENT_WEAK,  ACCENT_MEDIUM, ACCENT_WEAK, ACCENT_STRONG, 0, 0, 0},
-    /* 7/8 */  {ACCENT_STRONG, ACCENT_WEAK,  ACCENT_MEDIUM, ACCENT_WEAK, ACCENT_MEDIUM, ACCENT_WEAK, ACCENT_STRONG, 0},
-};
-
-/* ========== 全局状态 ========== */
-static struct {
-    /* 设置 */
-    int bpm;
-    int ts;
-    int volume;
-    int swing;
-    int gradual_accel;
-    int gradual_target;
-    int silent_bars;
-
-    /* 运行时状态 */
-    int state;          /* 0=停止, 1=播放, 2=暂停 */
-    int current_beat;
-    int bar_count;
-    long next_beat_tick;
-    int tick_interval;
-
-    /* Tap Tempo */
-    long tap_last_time;
-    int tap_bpm;
-
-    /* 动画状态 */
-    int beat_ease_frames;
-    int beat_target_scale;
-    int bpm_breathe;
-    int prog_arc;
-    int sub_prog;
-    int last_beat;
-    int key_feedback;
-    int key_focus;      /* 0=BPM, 1=TS, 2=VOL, 3=SWING */
-
-    /* 输入 */
-    int last_btn;
-} g;
-
-static void timer_callback(void)
+static void play_tick(void)
 {
-    ++minitick;
-    if (minitick >= period && g.state == 1) {
-        minitick = 0;
-        sound_trigger = true;
-    }
+    rb->mixer_channel_play_data(PCM_MIXER_CHAN_PLAYBACK, NULL, tick_buf, sizeof(tick_buf));
 }
 
-static void update_bpm_period(void)
+static void play_tock(void)
 {
-    g.tick_interval = BPM_TO_TICKS(g.bpm);
-    period = (g.tick_interval * TIMER_DIV) / HZ;
-    if (period < 1) period = 1;
+    rb->mixer_channel_play_data(PCM_MIXER_CHAN_PLAYBACK, NULL, tock_buf, sizeof(tock_buf));
 }
 
-/* ========== 辅助函数 ========== */
-
-static inline int get_accent(int beat)
+/* State: 0: blank/title, 1: tick, 2: tock 3: silent klick */
+/* TODO: Could use more smart placement, using
+   lcd_getstringsize() and such. */
+/* State: 0: blank/title, 1: tick, 2: tock 3: silent klick */
+static void metronome_draw(struct screen* display, int state)
 {
-    return ts_accents[g.ts][beat % ts_beats[g.ts]];
-}
-
-static inline int get_accent_color(int accent)
-{
-    switch (accent) {
-        case ACCENT_STRONG:  return C_RED;
-        case ACCENT_MEDIUM:  return C_ORG;
-        default:             return C_BLU;
-    }
-}
-
-
-/* ========== 音频引擎 (基于原始 metronome.c 的 beep_play 方案) ========== */
-
-/* ========== 音频引擎（基于 mixer_channel_play_data） ========== */
-static void play_beep(int accent)
-{
-    void *buf;
-    size_t size;
-
-    switch (accent) {
-        case ACCENT_STRONG:
-            buf = tick_buf;
-            size = sizeof(tick_buf);
-            break;
-        case ACCENT_MEDIUM:
-            buf = tick_buf;   /* 或者用 tock_buf 区分音色 */
-            size = sizeof(tick_buf);
-            break;
-        case ACCENT_WEAK:
-            buf = tock_buf;
-            size = sizeof(tock_buf);
-            break;
-        default:
-            return;
-    }
-
-    /* 直接播放，不设置通道音量（由系统主音量控制） */
-    rb->mixer_channel_play_data(PCM_MIXER_CHAN_PLAYBACK, NULL, buf, size);
-}
-
-/* ========== 节拍核心 ========== */
-
-static void metro_trigger(void)
-{
-    int accent = get_accent(g.current_beat);
-
-    /* 静默小节检查 */
-    int is_silent = (g.silent_bars > 0 &&
-                     g.bar_count % (g.silent_bars + 1) == 0);
-
-    if (!is_silent)
-        play_beep(accent);
-
-    /* 更新动画状态 */
-    g.last_beat = g.current_beat;
-    g.beat_ease_frames = ANIM_BEAT_FRAMES;
-    g.beat_target_scale = 180;
-    g.prog_arc = 0;
-    g.sub_prog = 0;
-
-    if (accent == ACCENT_STRONG && !is_silent)
-        g.bpm_breathe = ANIM_BREATHE_FRAMES;
-}
-
-static void metro_check(void)
-{
-    if (g.state != 1) return;
-
-    while (*rb->current_tick >= g.next_beat_tick) {
-        metro_trigger();
-
-        g.current_beat++;
-        if (g.current_beat >= ts_beats[g.ts]) {
-            g.current_beat = 0;
-            g.bar_count++;
-
-            /* 渐进加速 */
-            if (g.gradual_accel > 0 &&
-                g.bar_count % g.gradual_accel == 0 &&
-                g.bpm < g.gradual_target) {
-                g.bpm += GRAD_STEP;
-                if (g.bpm > g.gradual_target)
-                    g.bpm = g.gradual_target;
-                update_bpm_period();   // 关键：更新定时器周期
-            }
-        }
-
-        g.next_beat_tick += g.tick_interval;
-        long now = *rb->current_tick;
-        if (g.next_beat_tick < now)
-            g.next_beat_tick = now + g.tick_interval;
-    }
-}
-
-static void metro_reset(void)
-{
-    update_bpm_period();
-    minitick = 0;
-    g.current_beat = 0;
-    g.bar_count = 0;
-    if (!timer_running) {
-        rb->timer_register(1, NULL, TIMER_FREQ / TIMER_DIV, timer_callback IF_COP(, CPU));
-        timer_running = true;
-    }
-}
-
-
-/* ========== Tap Tempo (双击检测) ========== */
-
-static void tap_handle(void)
-{
-    long now = *rb->current_tick;
-    long interval = now - g.tap_last_time;
-
-    /* 如果间隔过短（< 50ms），视为误触，忽略并重置 */
-    if (g.tap_last_time != 0 && interval < HZ / 20) {
-        g.tap_last_time = 0;   // 清空，防止后续误判
-        return;
-    }
-
-    /* 如果离上次按下超过 TAP_TIMEOUT，重置为第一次单击 */
-    if (g.tap_last_time == 0 || interval > TAP_TIMEOUT) {
-        /* 单击：仅记录时间，不计算 BPM */
-        g.tap_last_time = now;
-        return;
-    }
-
-    /* 在超时内再次按下 → 视为双击，计算 BPM */
-    if (interval > 0) {
-        int bpm = 60 * HZ / interval;
-        if (bpm < BPM_MIN) bpm = BPM_MIN;
-        if (bpm > BPM_MAX) bpm = BPM_MAX;
-        g.bpm = bpm;
-        update_bpm_period();
-        g.tap_bpm = bpm;
-        /* 打点后重置，使下一次单击正常切换焦点 */
-        g.tap_last_time = 0;
-        g.key_feedback = FLASH_FRAMES;
-    }
-}
-
-
-/* ========== UI 绘制 ========== */
-
-static void draw_ui(void)
-{
+    struct part *ps = part;
     char buf[32];
     int w, h;
 
-    /* 清屏 */
-    rb->lcd_set_background(C_BG);
-    rb->lcd_clear_display();
+    display->set_background(C_BG);
+    display->clear_display();
 
-    /* ===== 顶部栏 (y=2) ===== */
-    rb->lcd_setfont(FONT_UI);
-    rb->lcd_set_foreground(C_FG);
-    rb->lcd_putsxy(4, 2, (const unsigned char *)"Metro");
+    /* 顶部标题和状态 */
+    display->setfont(FONT_UI);
+    display->set_foreground(C_FG);
+    display->putsxy(4, 2, (const unsigned char *)"Metro");
 
-    rb->lcd_set_foreground(C_HL);
-    rb->lcd_putsxy(100, 2, (const unsigned char *)ts_names[g.ts]);
+    display->set_foreground(C_HL);
+    rb->snprintf(buf, sizeof(buf), "%u/%u", ps->beats_per_bar, ps->base_beat);
+    display->putsxy(100, 2, (const unsigned char *)buf);
 
-    if (g.state == 1) {
-        rb->lcd_set_foreground(C_HL);
-        rb->lcd_putsxy(140, 2, (const unsigned char *)">>");
+    if (sound_paused) {
+        display->set_foreground(C_DIM);
+        display->putsxy(140, 2, (const unsigned char *)"||");
     } else {
-        rb->lcd_set_foreground(C_DIM);
-        rb->lcd_putsxy(140, 2, (const unsigned char *)"||");
+        display->set_foreground(C_HL);
+        display->putsxy(140, 2, (const unsigned char *)">>");
     }
 
-    /* 状态指示器 (y=12) */
-    int ind_x = 4;
-    if (g.gradual_accel > 0) {
-        rb->snprintf(buf, sizeof(buf), "ACC %d->%d", g.bpm, g.gradual_target);
-        rb->lcd_set_foreground(C_ORG);
-        rb->lcd_putsxy(ind_x, 12, (const unsigned char *)buf);
-        rb->lcd_getstringsize((const unsigned char *)buf, &w, &h);
-        ind_x += w;
-    }
-    if (g.silent_bars > 0) {
-        rb->snprintf(buf, sizeof(buf), "S:%d", g.silent_bars);
-        rb->lcd_set_foreground(C_BLU);
-        rb->lcd_putsxy(ind_x, 12, (const unsigned char *)buf);
-        rb->lcd_getstringsize((const unsigned char *)buf, &w, &h);
-        ind_x += w;
-    }
-    rb->lcd_set_foreground(C_DIM);
-    rb->snprintf(buf, sizeof(buf), "BAR:%d", g.bar_count);
-    rb->lcd_putsxy(120, 12, (const unsigned char *)buf);
-
-    /* ===== 节拍方块 (y=24) ===== */
-    int beats = ts_beats[g.ts];
+    /* 节拍圆点（基于 beat 和 part->pattern） */
+    int beats = ps->beats_per_bar;
     int dot_r = 7;
     int dot_gap = 24;
     int total_w = (beats - 1) * dot_gap;
-    int x0 = (LCD_W - total_w) / 2;
+    int x0 = (display->lcdwidth - total_w) / 2;
     int y_dot = 28;
 
     for (int i = 0; i < beats; i++) {
         int cx = x0 + i * dot_gap;
         int cy = y_dot + dot_r;
+        char pat = (ps->pattern && i < beats) ? ps->pattern[i] : 'x';
+        int col = (pat == 'X') ? C_RED : (pat == 'x') ? C_BLU : C_DIM;
 
-        int accent = get_accent(i);
-        int col = get_accent_color(accent);
-
-        /* 动画缩放: 从 180 缓动回 256 */
-        int scale = 256;
-        if (g.beat_ease_frames > 0 && i == g.last_beat) {
-            int progress = ANIM_BEAT_FRAMES - g.beat_ease_frames;
-            scale = 256 - (256 - g.beat_target_scale) *
-                    progress / ANIM_BEAT_FRAMES;
-            if (scale > 256) scale = 256;
-        }
-
-        int r = dot_r * scale / 256;
-        int half = r / 2;
-
-        if (g.state == 1 && i == g.current_beat) {
-            /* 当前拍: 实心 + 外描边 */
-            rb->lcd_set_foreground(col);
-            rb->lcd_fillrect(cx - half, cy - half, r, r);
-            rb->lcd_set_foreground(C_BG);
-            rb->lcd_drawrect(cx - half - 1, cy - half - 1, r + 2, r + 2);
-            rb->lcd_set_foreground(col);
-        } else if (g.state == 1 && i < g.current_beat) {
-            /* 已过拍: 灰色实心 */
-            rb->lcd_set_foreground(C_LGRY);
-            rb->lcd_fillrect(cx - half, cy - half, r, r);
+        if (i == beat && !sound_paused) {
+            display->set_foreground(col);
+            display->fillrect(cx - dot_r, cy - dot_r, dot_r*2, dot_r*2);
+            display->set_foreground(C_BG);
+            display->drawrect(cx - dot_r - 1, cy - dot_r - 1, dot_r*2+2, dot_r*2+2);
+            display->set_foreground(col);
+        } else if (i < beat && !sound_paused) {
+            display->set_foreground(C_LGRY);
+            display->fillrect(cx - dot_r, cy - dot_r, dot_r*2, dot_r*2);
         } else {
-            /* 未到达拍: 空心轮廓 */
-            rb->lcd_set_foreground(C_DIM);
-            rb->lcd_drawrect(cx - half, cy - half, r, r);
+            display->set_foreground(C_DIM);
+            display->drawrect(cx - dot_r, cy - dot_r, dot_r*2, dot_r*2);
         }
     }
 
-    /* ===== BPM 数字 (y=48) ===== */
-    int breathe = 0;
-    if (g.bpm_breathe > 0) {
-        breathe = (ANIM_BREATHE_FRAMES - g.bpm_breathe) * 2;
-        g.bpm_breathe--;
-    }
+    /* BPM 数字 */
+    display->setfont(FONT_SYSFIXED);
+    display->set_foreground(C_FG);
+    rb->snprintf(buf, sizeof(buf), "%d", bpm);
+    display->getstringsize((const unsigned char *)buf, &w, &h);
+    display->putsxy((display->lcdwidth - w) / 2, 48, (const unsigned char *)buf);
+    display->setfont(FONT_UI);
+    display->set_foreground(C_DIM);
+    display->putsxy((display->lcdwidth - 24) / 2, 62, (const unsigned char *)"BPM");
 
-    int bpm_y = 48 + breathe;
-    rb->lcd_setfont(FONT_SYSFIXED);
-    rb->lcd_set_foreground(C_FG);
-    rb->snprintf(buf, sizeof(buf), "%d", g.bpm);
-    rb->lcd_getstringsize((const unsigned char *)buf, &w, &h);
-    rb->lcd_putsxy((LCD_W - w) / 2, bpm_y, (const unsigned char *)buf);
-
-    rb->lcd_setfont(FONT_UI);
-    rb->lcd_set_foreground(C_DIM);
-    rb->lcd_putsxy((LCD_W - 24) / 2, bpm_y + 14,
-                   (const unsigned char *)"BPM");
-
-    /* ===== 进度条 (y=70) ===== */
+    /* 进度条（简化） */
     int bar_x = 10;
-    int bar_w = LCD_W - 20;
+    int bar_w = display->lcdwidth - 20;
+    display->set_foreground(C_DIM);
+    display->fillrect(bar_x, 74, bar_w, 4);
 
-    /* 主进度条 */
-    rb->lcd_set_foreground(C_DIM);
-    rb->lcd_fillrect(bar_x, 70, bar_w, 4);
-    if (g.prog_arc > 0) {
-        int prog_w = bar_w * g.prog_arc / 256;
-        rb->lcd_set_foreground(C_HL);
-        rb->lcd_fillrect(bar_x, 70, prog_w, 4);
-    }
-
-    /* 子拍进度条 */
-    rb->lcd_set_foreground(C_DIM);
-    rb->lcd_fillrect(bar_x, 77, bar_w, 2);
-    if (g.sub_prog > 0) {
-        int prog_w = bar_w * g.sub_prog / 256;
-        rb->lcd_set_foreground(C_HL);
-        rb->lcd_fillrect(bar_x, 77, prog_w, 2);
-    }
-
-    /* ===== 底部参数栏 (y=92) ===== */
-    int y_label = 92;
-    int y_value = 106;
-    int col_w = LCD_W / 4;
+    /* 底部参数（简化显示 BPM、拍号、音量） */
+    int y_label = 88;
+    int y_value = 102;
+    int col_w = display->lcdwidth / 4;
     const char *labels[4] = {"BPM", "TS", "VOL", "SW"};
-
     for (int i = 0; i < 4; i++) {
         int cx = i * col_w + col_w / 2;
-        int c = (g.key_focus == i && g.key_feedback > 0) ? C_HL : C_DIM;
-
-        rb->lcd_setfont(FONT_UI);
-        rb->lcd_getstringsize((const unsigned char *)labels[i], &w, &h);
-        rb->lcd_set_foreground(c);
-        rb->lcd_putsxy(cx - w / 2, y_label, (const unsigned char *)labels[i]);
+        display->setfont(FONT_UI);
+        display->set_foreground(C_DIM);
+        display->putsxy(cx - display->getstringsize((const unsigned char *)labels[i], &w, &h) / 2,
+                        y_label, (const unsigned char *)labels[i]);
     }
 
-    /* 参数值 */
     static char vbuf[4][8];
-    const char *values[4];
-
-    rb->snprintf(vbuf[0], 8, "%d", g.bpm);
-    values[0] = vbuf[0];
-    values[1] = ts_names[g.ts];
-    rb->snprintf(vbuf[2], 8, "%d", g.volume);
-    values[2] = vbuf[2];
-    rb->snprintf(vbuf[3], 8, "%d", g.swing);
-    values[3] = vbuf[3];
-
+    rb->snprintf(vbuf[0], 8, "%d", bpm);
+    rb->snprintf(vbuf[1], 8, "%u/%u", ps->beats_per_bar, ps->base_beat);
+    rb->snprintf(vbuf[2], 8, "%d", rb->global_status->volume);
+    rb->snprintf(vbuf[3], 8, "%d", 50);  // 占位
+    const char *values[4] = {vbuf[0], vbuf[1], vbuf[2], vbuf[3]};
     for (int i = 0; i < 4; i++) {
         int cx = i * col_w + col_w / 2;
-        int c = (g.key_focus == i && g.key_feedback > 0) ? C_HL : C_DIM;
-
-        rb->lcd_setfont(FONT_UI);
-        rb->lcd_getstringsize((const unsigned char *)values[i], &w, &h);
-        rb->lcd_set_foreground(c);
-        rb->lcd_putsxy(cx - w / 2, y_value, (const unsigned char *)values[i]);
+        display->set_foreground(C_DIM);
+        display->putsxy(cx - display->getstringsize((const unsigned char *)values[i], &w, &h) / 2,
+                        y_value, (const unsigned char *)values[i]);
     }
 
-    /* ===== Tap Tempo 指示器 (y=122) ===== */
-    if (g.tap_last_time != 0) {
-        rb->lcd_set_foreground(C_DIM);
-        rb->lcd_putsxy(30, 122,
-                       (const unsigned char *)"Tap again to set BPM");
-    } else {
-        rb->lcd_set_foreground(C_DIM);
-        rb->lcd_putsxy(30, 122,
-                       (const unsigned char *)"Double-tap SELECT for Tempo");
-    }
+    /* 底部提示 */
+    display->set_foreground(C_DIM);
+    display->putsxy(4, display->lcdheight - 12,
+                    (const unsigned char *)"PLAY:Start SEL:TAP L/R:BPM U/D:Vol");
 
-    /* ===== 底部操作提示 (y=148) ===== */
-    rb->lcd_set_foreground(C_DIM);
-    rb->lcd_putsxy(4, 148,
-                   (const unsigned char *)"PLAY:Start SEL:Focus L/R:Adj U/D:Vol WHEEL:Swing");
-
-    /* 更新显示 */
-    rb->lcd_update();
+    display->update();
 }
 
-
-/* ========== 输入处理 ========== */
-
-static void handle_input(int btn, int pressed)
+/* Trigger drawing of display at the next occasion using given state. */
+static void trigger_display(int state)
 {
-    (void)btn;
-	/* 1. 滚轮控制：根据当前焦点调节对应参数 */
-    if (pressed & (BUTTON_SCROLL_FWD)) {
-        switch (g.key_focus) {
-            case 0: /* BPM */
-                g.bpm = MIN(g.bpm + BPM_STEP, BPM_MAX);
-                update_bpm_period();
-                break;
-            case 1: /* TS */
-                g.ts = (g.ts + 1) % TS_NUM;
-                break;
-            case 2: /* VOL */
-                {
-                    int min_vol = rb->sound_min(SOUND_VOLUME);
-                    int max_vol = rb->sound_max(SOUND_VOLUME);
-                    g.volume = MIN(g.volume + VOL_STEP, VOL_MAX);
-                    int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-                    rb->sound_set(SOUND_VOLUME, sys_vol);
-                    break;
-                }
-            case 3: /* SWING */
-                g.swing = MIN(g.swing + 5, SWING_MAX);
-                break;
-        }
-        g.key_feedback = FLASH_FRAMES;
-        return;
-    }
-    if (pressed & (BUTTON_SCROLL_BACK)) {
-        switch (g.key_focus) {
-            case 0: /* BPM */
-                g.bpm = MAX(g.bpm - BPM_STEP, BPM_MIN);
-                update_bpm_period();
-                break;
-            case 1: /* TS */
-                g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
-                break;
-            case 2: /* VOL */
-                {
-                    int min_vol = rb->sound_min(SOUND_VOLUME);
-                    int max_vol = rb->sound_max(SOUND_VOLUME);
-                    g.volume = MAX(g.volume - VOL_STEP, VOL_MIN);
-                    int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-                    rb->sound_set(SOUND_VOLUME, sys_vol);
-                    break;
-                }
-            case 3: /* SWING */
-                g.swing = MAX(g.swing - 5, SWING_MIN);
-                break;
-        }
-        g.key_feedback = FLASH_FRAMES;
-        return;
-    }
+    display_state = state;
+    display_trigger = true;
+}
 
-    /* 2. SELECT (中心键)：单击切换焦点，双击打点调速 */
-    if (pressed & BUTTON_SELECT) {
-        /* 检测是否双击 */
-        if (g.tap_last_time != 0 && (*rb->current_tick - g.tap_last_time) <= TAP_TIMEOUT) {
-            /* 双击：执行 Tap Tempo */
-            tap_handle();  // 内部会更新 bpm 并重置 tap_last_time
-        } else {
-            /* 单击：切换焦点 */
-            g.key_focus = (g.key_focus + 1) % 4;
-            g.key_feedback = FLASH_FRAMES;
-            /* 记录第一次单击的时间，为下一次双击做准备 */
-            g.tap_last_time = *rb->current_tick;
-        }
-        return;
-    }
+/* Actually draw display. */
+static void draw_display(void)
+{
+    FOR_NB_SCREENS(i)
+        metronome_draw(rb->screens[i], display_state);
+}
 
-    /* 3. PLAY/PAUSE：开始/暂停 */
-    if (pressed & BUTTON_PLAY) {
-        if (g.state == 1) {
-            g.state = 2;
-            if (timer_running) {
-                rb->timer_unregister();
-                timer_running = false;
+/* Modify actual volume by given offset without changing the configured one.
+   This is for parts with associated volume. */
+static void tweak_volume(int offset)
+{
+    int vol    = rb->global_status->volume + offset;
+    int minvol = rb->sound_min(SOUND_VOLUME);
+    int maxvol = rb->sound_max(SOUND_VOLUME);
+
+    if     (vol > maxvol) vol = maxvol;
+    else if(vol < minvol) vol = minvol;
+
+    rb->sound_set(SOUND_VOLUME, vol);
+}
+
+/* tempo at a certain point in beat space in an accelerated part */
+static long accel_tempo(struct part *ps, long offset)
+{
+    long fp_bpm  = (long)ps->bpm<<16;
+    long fp_bpm2 = (long)ps->bpm2<<16;
+    long v       = fp_bpm + fp_mul(ps->accel, offset, 16);
+    /* Offset could be negative, actually, so ensure tempo stays within both
+       bounds */
+    if(ps->accel > 0)
+    {
+        if(v < fp_bpm)  v = fp_bpm;
+        if(v > fp_bpm2) v = fp_bpm2;
+    }
+    else /* deceleration */
+    {
+        if(v > fp_bpm)  v = fp_bpm;
+        if(v < fp_bpm2) v = fp_bpm2;
+    }
+    return v;
+}
+
+/* Calculate number of ticks to wait till next beat. */
+static void calc_period(void)
+{
+    struct part *ps = part;
+    long deltat;
+    long beatlen; /* in quarter notes */
+    long period_fp;
+
+    beatlen = fp_div(4<<16, ps->base_beat<<16, 16);
+    /* Hack: Put the factor 60 in before computing deltat, to preserve
+       some accuracty. */
+    if(ps->beat_bpm)
+    {
+        bpm = ps->beat_bpm[bar*ps->beats_per_bar+beat];
+        deltat = fp_div(fp_mul(60<<16,beatlen,16), bpm<<16, 16);
+    } else
+    if(ps->accel == 0.f)
+    { /* Fixed tempo. */
+        bpm = ps->bpm;
+        /* Minutes per base beat, from quarters per minute. */
+        deltat = fp_div(fp_mul(60<<16,beatlen,16), bpm<<16, 16);
+    }
+    else
+    { /* Acceleration, varying period with each beat. */
+        long v0, v1;
+        long offset = (bar*ps->beats_per_bar + beat) << 16;
+        /* Always computed from start of part for seeking and accuracy. */
+        v0 = accel_tempo(ps, fp_mul(beatlen, offset, 16));
+        offset += 1<<16;
+        v1 = accel_tempo(ps, fp_mul(beatlen, offset, 16));
+        /* Playing safe with too small tempo changes, avoiding the acceleration
+           math that might divide by very small deltat. */
+        if(labs(v1-v0) > 1<<8)
+        {
+            /* deltat = 1.f / ps->accel * rb_log(v1/v0) */
+            deltat = fp_mul( fp_div(60<<16, ps->accel, 16)
+                           , fp16_log(fp_div(v1, v0, 16))
+                           , 16 );
+            bpm = fp_rint(fp_div(fp_mul(60<<16, beatlen, 16), deltat, 16));
+        }
+        else
+        { /* Arbitrarily choosing v1. */
+            bpm    = fp_rint(v1);
+            deltat = fp_div(fp_mul(60<<16,beatlen,16), v1, 16);
+        }
+    }
+    /* The treatment of the rounding error when converting to integer
+       period using period_diff helps a lot to keep track lengths close to
+       "correct" even with timerfreq_div as low as 77. Actually, I have _less_
+       drift than with timerfreq_div of 1000!  */
+    period_fp   = fp_mul(timerfreq_div<<16, deltat, 16) + period_diff;
+    period      = positive(fp_rint( period_fp ));
+    period_diff = period_fp - (long)(period<<16);
+}
+
+/* Last beat finished, to prepare for the next one. */
+static void advance_beat(void)
+{
+    if(++beat == part->beats_per_bar)
+    {
+        beat = 0;
+        /* Bar counter always incremented for acceleration, but only checked
+           against a limit if there is one. */
+        ++bar;
+        if(part->bars && bar == part->bars)
+        {
+            bar = 0;
+            if(part->next) part = part->next;
+            else
+            {
+                part = part_list;
+                if(!loop) sound_paused = true;
             }
-            rb->splash(HZ/2, "Paused");
-        } else {
-            g.state = 1;
-            metro_reset();  // 重新启动定时器
-            rb->splash(HZ/2, "Play");
+            tweak_volume(part->volume);
         }
-        return;
     }
-
-    /* 4. MENU：退出 */
-    if (pressed & BUTTON_MENU) {
-        return;
-    }
-
-    /* 5. 其他按键：保留方向键支持（仅对有方向键的设备） */
-    #ifdef BUTTON_LEFT
-    if (pressed & BUTTON_LEFT) {
-        if (g.key_focus == 0) {
-            g.bpm = MAX(g.bpm - 1, BPM_MIN);
-            update_bpm_period();
-        }
-        else if (g.key_focus == 1) g.ts = (g.ts - 1 + TS_NUM) % TS_NUM;
-        g.key_feedback = FLASH_FRAMES;
-    }
-    #endif
-    #ifdef BUTTON_RIGHT
-    if (pressed & BUTTON_RIGHT) {
-        if (g.key_focus == 0) {
-            g.bpm = MIN(g.bpm + 1, BPM_MAX);
-            update_bpm_period();
-        }
-        else if (g.key_focus == 1) g.ts = (g.ts + 1) % TS_NUM;
-        g.key_feedback = FLASH_FRAMES;
-    }
-    #endif
-    #ifdef BUTTON_UP
-    if (pressed & BUTTON_UP) {
-        if (g.key_focus == 2) {
-            int min_vol = rb->sound_min(SOUND_VOLUME);
-            int max_vol = rb->sound_max(SOUND_VOLUME);
-            g.volume = MIN(g.volume + VOL_STEP, VOL_MAX);
-            int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-            rb->sound_set(SOUND_VOLUME, sys_vol);
-        }
-        g.key_feedback = FLASH_FRAMES;
-    }
-    #endif
-    #ifdef BUTTON_DOWN
-    if (pressed & BUTTON_DOWN) {
-        if (g.key_focus == 2) {
-            int min_vol = rb->sound_min(SOUND_VOLUME);
-            int max_vol = rb->sound_max(SOUND_VOLUME);
-            g.volume = MAX(g.volume - VOL_STEP, VOL_MIN);
-            int sys_vol = min_vol + (g.volume * (max_vol - min_vol)) / 255;
-            rb->sound_set(SOUND_VOLUME, sys_vol);
-        }
-        g.key_feedback = FLASH_FRAMES;
-    }
-    #endif
+    /* Always recompute period, as acceleration changes it for each beat. */
+    calc_period();
 }
 
-/* ========== 主入口 ========== */
-
-enum plugin_status plugin_start(const void *parameter)
+/* Decide what to play, update display, play it.
+   Beat counting happens here, too. */
+static void play_ticktock(void)
 {
-    (void)parameter;
+    if(beating) advance_beat();
 
-    /* 1. 先停止所有音频 */
+    /* Hack: Clear trigger to avoid race condition. */
+    display_trigger = 0;
+    if(sound_paused)
+    {
+        beating = false;
+        display_state = 0;
+        draw_display();
+    }
+    else
+    {
+        char pat = 'x';
+        if(part->pattern) pat = part->pattern[beat];
+
+        beating = true;
+        /* Blinking and specific sound for tick, tock and silent beat.
+           Drawing display first for slow machines (YH820), to avoid
+           interrupting audio for regular playback. */
+        switch(pat)
+        {
+            case 'X':
+                display_state = 1;
+                draw_display();
+                play_tick();
+            break;
+            case 'x':
+                display_state = 2;
+                draw_display();
+                play_tock();
+            break;
+            default:
+                display_state = 3;
+                draw_display();
+        }
+    }
+}
+
+/* helper function to change the volume by a certain amount, +/-
+   ripped from video.c */
+static void change_volume(int delta)
+{
+    int minvol = rb->sound_min(SOUND_VOLUME);
+    int maxvol = rb->sound_max(SOUND_VOLUME);
+    int vol    = rb->global_status->volume + delta;
+
+    if     (vol > maxvol) vol = maxvol;
+    else if(vol < minvol) vol = minvol;
+    if(vol != rb->global_status->volume)
+    {
+        rb->global_status->volume = vol;
+        tweak_volume(part->volume);
+        trigger_display(display_state);
+    }
+}
+
+/*function to accelerate bpm change*/
+static void change_bpm(int direction)
+{
+    if(    (bpm_step_counter < 20)
+        || (bpm > 389)
+        || (bpm < 10) )
+        bpm = bpm + direction;
+    else if(bpm_step_counter < 60)
+        bpm = bpm + direction * 2;
+    else
+        bpm = bpm + direction * 9;
+
+    if(bpm > 400) bpm = 400;
+    if(bpm < 1)   bpm = 1;
+
+    part->bpm = bpm;
+    calc_period();
+    trigger_display(display_state);
+    bpm_step_counter++;
+}
+
+/* I presume the timer ensures that not more than one instance
+   of the callback is running at a given time. */
+static void timer_callback(void)
+{
+    ++minitick;
+
+    /* Clear blinker if tempo is slow enough. */
+    if( (bpm*part->base_beat)/4 <= blinklimit &&
+        !sound_paused && minitick == period/2 )
+        trigger_display(0);
+
+    if(minitick >= period)
+    {
+        minitick = 0;
+        if(!sound_paused && !tap_count)
+        {
+            sound_trigger = true;
+            rb->reset_poweroff_timer();
+        }
+    }
+
+    if(tap_count)
+    {
+        tap_time++;
+        if(tap_count > 1 && tap_time > tap_timeout)
+            tap_count = 0;
+    }
+}
+
+/* Stopping playback means incrementing the beat. Normally, it would be
+   incremented after the passing of the current note duration, naturally
+   while starting the next one. */
+static void metronome_pause(void)
+{
+    if(beating)
+    {
+        /* Finish the current beat. */
+        advance_beat();
+        beating = false;
+    }
+    sound_paused = true;
+    trigger_display(0);
+    rb->timer_unregister();
+}
+
+static void metronome_unpause(void)
+{
+    sound_paused = false;
+    minitick = period; /* Start playing immediately (or after a millisecond). */
+    /* Conserve power: Only start timer when actually playing. */
+    rb->timer_register( 1, NULL, TIMER_FREQ/timerfreq_div
+                      , timer_callback IF_COP(, CPU) );
+}
+
+static void cleanup(void)
+{
+    if(fd >= 0) rb->close(fd);
+
+    metronome_pause();
+    rb->pcmbuf_fade(false, false); /* Mute channel */
+    rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
+    tweak_volume(0);
+    rb->led(0);
+    rb->mixer_set_frequency(HW_SAMPR_DEFAULT);
+}
+
+/*
+    Parse part definitions from tempomap file (see header for format).
+    Not bothering with encoding issues here.
+*/
+
+/* parse meter spec into part structure if given token matches */
+static bool parse_meter(char *token, struct part *ps)
+{
+    char *toktok;
+    /* Careful not to misinterpret accelerated tempo specification:
+       120-150/4 -> tempo
+       3/4 -> meter */
+    if( !rb->strchr(token, '-') && (toktok = rb->strchr(token, '/')) )
+    {
+        /* Number before and after the '/'. */
+        int num[2];
+        num[0] = rb->atoi(token);
+        num[1] = rb->atoi(++toktok);
+        /* Only accept positive numbers. */
+        if(num[0] > 0 && num[1] > 0)
+        {
+            ps->beats_per_bar = (unsigned int) num[0];
+            ps->base_beat     = (unsigned int) num[1];
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Parse tempo, successful when getting a positive integer out of the token. */
+static bool parse_tempo(char *token, struct part *ps)
+{
+    char *toktok;
+    /* tempo[-tempo2/accel] ... first number always main tempo */
+    int num = rb->atoi(token);
+    /* Only positive numbers. This avoids the pattern string and general
+       strangeness, unless -150 should mean "from previous tempo to 150". */
+    if(num < 1) return false;
+
+    ps->bpm = (unsigned int) num;
+    ps->bpm2 = ps->bpm;
+    ps->accel = 0;
+    /* This parser is not fool-proof. It parses valid data, but could
+       do funny things if you provide tempo/tempo2-accel, for example.
+       My credo is that the application doesn't crash, but if you give rubbish,
+       you'll get rubbish. */
+    if( (toktok = rb->strchr(token, '-')) )
+    {
+        char *subtok = toktok+1;
+        float faccel = 0.;
+        ps->bpm2 = positive(rb->atoi(subtok));
+        /* Parse or compute accel in bpm/bar. */
+        if( (toktok = rb->strchr(subtok, '/')) )
+        { /* bars/bpm */
+            float c = rb_atof(++toktok);
+            if( (c > 0.f ? c : -c) > 0.0001f)
+            faccel = 1./c;
+        }
+        else if( (toktok = rb->strchr(subtok, '*')) )
+        { /* bpm/bar */
+            faccel = rb_atof(++toktok);
+        }
+        else if(ps->bars > 0)
+        { /* Compute from tempo difference and bar count. */
+            faccel = ((float)ps->bpm2 - (float)ps->bpm)/ps->bars;
+        }
+        /* Correct sign for all cases, starting with positive value. */
+        if(faccel < 0) faccel = -faccel;
+        /* Negative only when end tempo is smaller. */
+        if(ps->bpm2 < ps->bpm) faccel = -faccel;
+        /* Convert (quarterbeats-per-minute per bar) -> 1/min, which could be
+           seen as beats-per-minute/beat */
+        faccel *= 1.f / (4.f/ps->base_beat * ps->beats_per_bar); /* 1/min */
+        ps->accel = fp_frac(faccel);
+    } else
+    /* The other fancy variant: One tempo per beat. */
+    if( (toktok = rb->strchr(token, ',')) )
+    {
+        size_t i;
+        char *subtok = token;
+        /* It is a bug when the parser called this before. Alloc once. */
+        if( ps->beat_bpm || !(ps->beat_bpm =
+            mem_allocate(sizeof(unsigned int)*ps->beats_per_bar*ps->bars)) )
+            return false;
+        for(i=0; i<ps->beats_per_bar*ps->bars; ++i)
+        {
+            int num;
+            if(!subtok) return false;
+            if(subtok != token) ++subtok;
+
+            num = rb->atoi(subtok);
+            if(num < 1) return false;
+
+            ps->beat_bpm[i] = (unsigned int) num;
+            subtok = rb->strchr(subtok, ',');
+        }
+    }
+    return true;
+}
+
+/* The metronome pattern.
+   Ensure that the correct meter is present before calling this! */
+static bool parse_pattern(char *token, struct part *ps)
+{
+    size_t pi;
+    size_t pats = rb->strlen(token);
+
+    /* First check if the pattern is valid, error out if not. */
+    if(pats != ps->beats_per_bar)
+        return false;
+    for(pi=0; pi<pats; ++pi)
+    switch(token[pi])
+    {
+        case 'X':
+        case 'x':
+        case '.':
+            break;
+        default: return false;
+    }
+
+    if(!(ps->pattern || (ps->pattern = mem_allocate(pats))))
+        return false;
+    /* Now store it. */
+    memcpy(ps->pattern, token, pats);
+    return true;
+}
+
+static bool parse_volume(char *token, struct part *ps)
+{
+    float factor = rb_atof(token);
+    ps->volume = fp_rint(fp_decibels(fp_frac(factor > 0.f ? factor : 0.f), 16));
+    return true;
+}
+
+/* Check condition, set error code and bail out if violated. */
+#define CHECK(a, c) if(!(a)){ errcode = c; goto parse_part_revert; }
+
+static void parse_part(char *line, unsigned int num)
+{
+    char *saveptr;
+    char *toktok;
+    char *token[5];
+    struct part *ps;
+    size_t tokens = 0;
+    unsigned int errcode = MERR_NOTHING;
+
+    while (isspace(*line)) line++;
+    /* Skip comments and empty lines quickly. */
+    if(line[0] == '#' || line[0] == 0) return;
+
+    mem_checkpoint();
+    CHECK(ps = mem_allocate(sizeof(struct part)), MERR_OOM);
+    part_init(ps);
+
+    /* Check for and store label. */
+    if( (toktok = rb->strchr(line, ':')) )
+    {
+       size_t len = toktok-line;
+       CHECK(ps->label = mem_allocate(len+1), MERR_OOM);
+       rb->memcpy(ps->label, line, len);
+       ps->label[len] = 0;
+       line = toktok+1;
+    }
+
+    CHECK(token[0] = rb->strtok_r(line, " \t", &saveptr), MERR_MISSING);
+    tokens = 1;
+    /* After the optional label, there can be up to 5 tokens of interest.
+       Collect them in advance to make the parser code more sane. */
+    while(    tokens < 5
+          && (token[tokens] = rb->strtok_r(NULL, " \t", &saveptr)) )
+    {
+        if(token[tokens][0] == '#')
+            break;
+        ++tokens;
+    }
+
+    CHECK(tokens >= 2, MERR_MISSING);
+
+    /* Now try to be smart about guessing which token can be what value.
+       Remember: Always parse meter before pattern or tempo! */
+    ps->bars = (unsigned int) rb->atoi(token[0]);
+    if(tokens == 2) /* <bars> <tempo> */
+    {
+       CHECK(parse_tempo(token[1], ps), MERR_TEMPO);
+    } else
+    if(tokens == 3)
+    {
+        /* <bars> <meter> <tempo> */
+        if(parse_meter(token[1], ps))
+        {
+            CHECK(parse_tempo(token[2], ps), MERR_TEMPO);
+        } else
+        /* <bars> <tempo> <pattern> */
+        if(parse_pattern(token[2], ps))
+        {
+            CHECK(parse_tempo(token[1], ps), MERR_TEMPO);
+        } else
+        /* <bars> <tempo> <volume> */
+        {
+            CHECK(parse_tempo(token[1], ps), MERR_TEMPO);
+            CHECK(parse_volume(token[2], ps), MERR_VOLUME);
+        }
+    } else
+    if(tokens == 4)
+    {
+        /* <bars> <meter> <tempo> <pattern> */
+        if(parse_meter(token[1], ps) && parse_pattern(token[3], ps))
+        {
+            CHECK(parse_tempo(token[2], ps), MERR_TEMPO);
+        } else
+        /* <bars> <tempo> <pattern> <volume> */
+        if(parse_pattern(token[2], ps))
+        {
+            CHECK(parse_tempo(token[1], ps), MERR_TEMPO);
+            CHECK(parse_volume(token[3], ps), MERR_VOLUME);
+        } else
+        /* <bars> <meter> <tempo> <volume> */
+        {
+            CHECK(parse_meter(token[1], ps), MERR_METER);
+            CHECK(parse_tempo(token[2], ps), MERR_TEMPO);
+            CHECK(parse_volume(token[3], ps), MERR_VOLUME);
+        }
+    } else
+    if(tokens == 5) /* the complete set */
+    {
+        /* <bars> <meter> <tempo> <pattern> <volume> */
+        CHECK(parse_meter(token[1], ps), MERR_METER);
+        CHECK(parse_tempo(token[2], ps), MERR_TEMPO);
+        CHECK(parse_pattern(token[3], ps), MERR_PATTERN);
+        CHECK(parse_volume(token[4], ps), MERR_VOLUME);
+    }
+
+    if(!ps->pattern)
+    {
+        /* For parsed parts default to emphasize every first beat. */
+        CHECK(ps->pattern = mem_allocate(ps->beats_per_bar), MERR_OOM);
+        memset(ps->pattern, 'x', ps->beats_per_bar);
+        ps->pattern[0] = 'X';
+    }
+
+    part_add(ps);
+    return; /* all good */
+
+    /* Remove part after some error. */
+parse_part_revert:
+    rb->snprintf(buffer, sizeof(buffer), "ERR %u @line %u", errcode, num);
+    rb->splash(2*HZ, buffer);
+    ++bad_parts;
+    mem_reset();
+}
+
+#undef CHECK
+
+static void step_back(void)
+{
+    beating = false;
+    beat = 0;
+    if(bar)
+    {
+        /* Endless parts only know position 0 to step to. */
+        if(part->bars) --bar;
+        else bar = 0;
+    }
+    else if(part->prev)
+    {
+        part = part->prev;
+        /* This will jump to bar 0 for endless parts. */
+        bar = positive(part->bars)-1;
+        tweak_volume(part->volume);
+    }
+    /* Always calculate period for acceleration. */
+    calc_period();
+    minitick = period;
+}
+
+static void step_forw(void)
+{
+    beating = false;
+    /* Stepping forward in endless part always goes to the next one, if any. */
+    if(part->bars == 0 || bar+1 == part->bars)
+    {
+        if(part->next)
+        { /* Advanced one part. */
+            part = part->next;
+            bar = 0;
+            beat = 0;
+            tweak_volume(part->volume);
+        }
+    }
+    else ++bar;
+    /* Always calculate period for acceleration. */
+    calc_period();
+    minitick = period;
+}
+
+static void tap(void)
+{
+    struct part *ps = part;
+
+    /* Each tap resets the position. */
+    beat = 0;
+    bar = 0;
+
+    if(tap_count == 0 || tap_time < tap_count)
+       tap_time = 0;
+    else
+    {
+        if(tap_time > 0)
+        {
+            /* Could use fixed point math and rounding, even. */
+            ps->bpm = 60*timerfreq_div*tap_count/tap_time;
+
+            if(ps->bpm > 400) ps->bpm = 400;
+        }
+        tap_timeout = (tap_count+2)*tap_time/tap_count;
+    }
+
+    tap_count++;
+    minitick = 0;  /* sync tock to tapping */
+    reset_tap = false;
+    play_ticktock();
+}
+
+enum plugin_status plugin_start(const void* file)
+{
+    int button;
+    static int last_button = BUTTON_NONE;
+    bool common_action;
+
+    atexit(cleanup);
+
+    mem_init();
+
     rb->audio_stop();
 
-    /* 2. 设置采样率并准备缓冲区 */
-    rb->mixer_set_frequency(SAMPR_44);
-    rb->pcmbuf_fade(false, true);
     prepare_buffers();
+#if INPUT_SRC_CAPS != 0
+    /* Select playback */
+    rb->audio_set_input_source(AUDIO_SRC_PLAYBACK, SRCF_PLAYBACK);
+    rb->audio_set_output_source(AUDIO_SRC_PLAYBACK);
+#endif
+    rb->mixer_set_frequency(SAMPR_44);
+    rb->pcmbuf_fade(false, true); /* Be sure channel is audible */
 
-    /* 初始化默认设置 */
-    rb->memset(&g, 0, sizeof(g));
-    g.bpm = BPM_DEF;
-    g.ts = TS_4_4;
-    int min_vol = rb->sound_min(SOUND_VOLUME);
-    int max_vol = rb->sound_max(SOUND_VOLUME);
-    int cur_vol = rb->global_status->volume;
-    g.volume = (cur_vol - min_vol) * 255 / (max_vol - min_vol);
-    if (g.volume < 0) g.volume = 0;
-    if (g.volume > 255) g.volume = 255;
-    g.swing = SWING_DEF;
-    g.gradual_accel = GRAD_DEF;
-    g.gradual_target = BPM_DEF;
-    g.silent_bars = SILENT_DEF;
-    g.state = 0;
-    g.current_beat = 0;
-    g.bar_count = 0;
-    g.key_focus = 0;
-    g.tap_last_time = 0;
-    g.tap_bpm = BPM_DEF;
-    g.beat_ease_frames = 0;
-    g.bpm_breathe = 0;
-    g.prog_arc = 256;
-    g.sub_prog = 256;
-    g.last_beat = -1;
-    g.last_btn = 0;
-
-    /* 主循环: 3ms 轮询, 兼顾响应与功耗 */
-    while (1) {
-        int btn = rb->button_get_w_tmo(HZ / 333);
-        int pressed = btn & ~g.last_btn;
-        g.last_btn = btn;
-
-        if (pressed & BUTTON_MENU)
-            break;
-
-        handle_input(btn, pressed);
-        metro_check();
-
-        /* 更新动画 (仅播放时) */
-        if (g.state == 1) {
-            /* 节拍缓动 */
-            if (g.beat_ease_frames > 0) {
-                g.beat_ease_frames--;
-                if (g.beat_ease_frames == 0)
-                    g.beat_target_scale = 256;
+    if(file)
+    {
+        parts = 0;
+        bad_parts = 0;
+        fd = rb->open(file, O_RDONLY);
+        if(fd >= 0)
+        {
+            unsigned int linenum = 0;
+            /* Crazyness, allocating line buffer depending on free memory. */
+            linebuf_size = mem_end - mem_free_region > 32*1024
+            ?   1024
+            :   ( mem_end - mem_free_region > 16*1024
+                ?  256
+                :  128 );
+            if(!(linebuf = mem_allocate(linebuf_size))) return PLUGIN_ERROR;
+            /* I'm assuming that read_line always terminates. */
+            while(rb->read_line(fd, linebuf, linebuf_size) > 0)
+            {
+               parse_part(linebuf, ++linenum);
             }
-            /* 进度条 */
-            if (g.prog_arc < 256) {
-                g.prog_arc += ANIM_PROG_SPEED;
-                if (g.prog_arc > 256) g.prog_arc = 256;
+        }
+        rb->close(fd);
+        if(bad_parts)
+        {
+            rb->snprintf(buffer, sizeof(buffer), "%u bad parts", bad_parts);
+            rb->splash(2*HZ, buffer);
+        }
+        if(!parts)
+        {
+            rb->splash(2*HZ, "Got no parts. Bye!");
+            return PLUGIN_OK;
+        }
+    }
+
+    /* If no parts given, start in simple metronome mode. */
+    if(!parts)
+    { /* Just checking the early bailout here. */
+        struct part *ps = mem_allocate(sizeof(struct part));
+        if(!ps) return PLUGIN_ERROR;
+        part_init(ps);
+        part_add(ps);
+        track_mode = false;
+    }
+    else track_mode = true;
+
+    part = part_list;
+    tweak_volume(part->volume);
+    calc_period();
+    draw_display();
+
+    /* main loop */
+    while(true)
+    {
+        reset_tap = true;
+        button = pluginlib_getaction( TIMEOUT_NOBLOCK, plugin_contexts
+                                    , PLA_ARRAY_COUNT );
+        if(sound_trigger)
+        {
+            sound_trigger = false;
+            play_ticktock(); /* Draws display before playback. */
+        }
+
+        common_action = false;
+        if(track_mode)
+        {
+            switch(button)
+            {
+                case METRONOME_START:
+                    if(sound_paused) metronome_unpause();
+                    else             metronome_pause();
+                    break;
+                case METRONOME_PAUSE:
+                    if(!sound_paused) metronome_pause();
+                    break;
+                case METRONOME_LEFT:
+                case METRONOME_LEFT_REP:
+                    step_back();
+                    trigger_display(0);
+                    break;
+                case METRONOME_RIGHT:
+                case METRONOME_RIGHT_REP:
+                    step_forw();
+                    trigger_display(0);
+                    break;
+                default:
+                    common_action = true;
             }
-            /* 子拍进度 */
-            if (g.sub_prog < 256) {
-                g.sub_prog += ANIM_PROG_SPEED / 2;
-                if (g.sub_prog > 256) g.sub_prog = 256;
+        }
+        else
+        {
+            switch(button)
+            {
+                case METRONOME_PAUSE:
+                    if(!sound_paused) metronome_pause();
+                    break;
+                case METRONOME_PLAY:
+                    if(sound_paused) metronome_unpause();
+                    break;
+                case METRONOME_TAP:
+                    if(last_button != METRONOME_PLAY)
+                    {
+                        if(sound_paused) metronome_unpause();
+                        tap();
+                    }
+                    break;
+                case METRONOME_LEFT:
+                    bpm_step_counter = 0;
+                    /* fallthrough */
+                case METRONOME_LEFT_REP:
+                    change_bpm(-1);
+                    break;
+                case METRONOME_RIGHT:
+                    bpm_step_counter = 0;
+                    /* fallthrough */
+                case METRONOME_RIGHT_REP:
+                    change_bpm(1);
+                    break;
+#ifdef MET_SYNC
+                case METRONOME_SYNC:
+                    minitick = period;
+                break;
+#endif
+                default:
+                    common_action = true;
             }
         }
 
-        /* 按键反馈衰减 */
-        if (g.key_feedback > 0)
-            g.key_feedback--;
+        if(common_action)
+        switch(button)
+        {
+            case METRONOME_QUIT:
+                /* get out of here */
+                return PLUGIN_OK;
+            case METRONOME_VOL_UP:
+            case METRONOME_VOL_UP_REP:
+                change_volume(1);
+                trigger_display(0);
+                break;
+            case METRONOME_VOL_DOWN:
+            case METRONOME_VOL_DOWN_REP:
+                change_volume(-1);
+                trigger_display(0);
+                break;
+            default:
+                exit_on_usb(button);
+                reset_tap = false;
+                break;
+        }
 
-        draw_ui();
+        if(button)
+            last_button = button;
+        if(reset_tap)
+            tap_count = 0;
+        /* If there was some action, display drawing is still needed.
+           This _might_ disturb audio on slow machines, but
+           then, you could just stop pressing buttons, then;-) */
+        if(display_trigger)
+        {
+            display_trigger = false;
+            draw_display();
+        }
+
+        /* This determines the accuracy of the metronome with SWCODEC ... the
+           scheduler decides when we are allowed to play. */
         rb->yield();
     }
-    /* 停止播放通道 */
-    rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
-
-    return PLUGIN_OK;
 }

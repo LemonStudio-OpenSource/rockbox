@@ -87,7 +87,6 @@
 #define BPM_STEP  1
 
 /* ========== 定时器分频 ========== */
-#define TIMER_FREQ  (1000000)   /* 1 MHz 系统时钟，具体见 rockbox 文档 */
 #define TIMER_DIV   500         /* 2ms 分辨率 */
 #define TIMER_PERIOD (TIMER_FREQ / TIMER_DIV)  /* 定时器周期滴答数 */
 
@@ -501,21 +500,7 @@ static void prepare_buffers(void)
     }
 }
 
-static void timer_callback(void)
-{
-    ++minitick;
-    if (minitick >= period && g.state == 1) {
-        minitick = 0;
-        sound_trigger = true;
-    }
-}
 
-static void update_bpm_period(void)
-{
-    g.tick_interval = BPM_TO_TICKS(g.bpm);
-    period = (g.tick_interval * TIMER_DIV) / HZ;
-    if (period < 1) period = 1;
-}
 
 
 /* ========== 拍号定义 ========== */
@@ -585,6 +570,22 @@ static struct {
     /* 输入 */
     int last_btn;
 } g;
+
+static void timer_callback(void)
+{
+    ++minitick;
+    if (minitick >= period && g.state == 1) {
+        minitick = 0;
+        sound_trigger = true;
+    }
+}
+
+static void update_bpm_period(void)
+{
+    g.tick_interval = BPM_TO_TICKS(g.bpm);
+    period = (g.tick_interval * TIMER_DIV) / HZ;
+    if (period < 1) period = 1;
+}
 
 /* ========== 辅助函数 ========== */
 
@@ -693,7 +694,7 @@ static void metro_reset(void)
     g.current_beat = 0;
     g.bar_count = 0;
     if (!timer_running) {
-        rb->timer_register(1, timer_callback, TIMER_FREQ / TIMER_DIV);
+        rb->timer_register(1, timer_callback, TIMER_FREQ / TIMER_DIV IF_COP(, CPU));
         timer_running = true;
     }
 }
@@ -928,10 +929,10 @@ static void draw_ui(void)
 
 /* ========== 输入处理 ========== */
 
-static void handle_input(int btn, int pressed)
+static void handle_input(int /*btn*/, int pressed)
 {
     /* 1. 滚轮控制：根据当前焦点调节对应参数 */
-    if (pressed & (BUTTON_SCROLL_FWD | BUTTON_SCROLL_FWD_REPEAT)) {
+    if (pressed & (BUTTON_SCROLL_FWD)) {
         switch (g.key_focus) {
             case 0: /* BPM */
                 g.bpm = MIN(g.bpm + BPM_STEP, BPM_MAX);
@@ -956,7 +957,7 @@ static void handle_input(int btn, int pressed)
         g.key_feedback = FLASH_FRAMES;
         return;
     }
-    if (pressed & (BUTTON_SCROLL_BACK | BUTTON_SCROLL_BACK_REPEAT)) {
+    if (pressed & (BUTTON_SCROLL_BACK)) {
         switch (g.key_focus) {
             case 0: /* BPM */
                 g.bpm = MAX(g.bpm - BPM_STEP, BPM_MIN);

@@ -298,7 +298,15 @@ static bool load_rom(void) {
     if (size > 0x2000) size = 0x2000;
     rb->read(fd, mem + 0xE000, size);
     rb->close(fd);
-    LOG("ROM loaded: %d bytes at 0xE000", size);
+    #if LOG_ENABLED
+        char hexbuf[64];
+        int pos = 0;
+        int show = size < 16 ? size : 16;
+        for (int i = 0; i < show; i++) {
+            pos += rb->snprintf(hexbuf+pos, sizeof(hexbuf)-pos, "%02X ", mem[0xE000+i]);
+        }
+        LOG("ROM loaded: %d bytes at 0xE000, first %d bytes: %s", size, show, hexbuf);
+    #endif
     return true;
 }
 

@@ -17,7 +17,7 @@
    Colors (RGB565) - USER CAN CHANGE HERE
    ============================================================ */
 #define COLOR_BG      0x0000    /* Background: black */
-#define COLOR_TEXT    0x07E0    /* Text color: green (change to e.g. 0xFFFF for white) */
+#define COLOR_TEXT    0x67E0    /* Text color: green (change to e.g. 0xFFFF for white) */
 #define COLOR_CURSOR  0xFFFF    /* Cursor underline: white */
 #define COLOR_LABEL   0x8410    /* Label "KB:": gray */
 #define COLOR_HIGHLIGHT_BG 0xFFFF /* Highlight background: white */

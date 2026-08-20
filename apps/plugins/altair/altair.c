@@ -1,12 +1,9 @@
 /*
- * Altair 8800 模拟器 V0.1 - UI 预览版
- * 仅实现界面绘制和按键流程，不包含 CPU 模拟、文件读写。
- * 
+ * Altair 8800 模拟器 V0.1 - UI 预览版 (修复编译错误)
  * 按键映射：
  *   PLAY  : 弹出 "Run now?" 对话框
  *   MENU  : 退出插件
- *   POWER : 退出插件
- *   (其他按键无功能)
+ *   (POWER 键改用 BUTTON_OFF，某些平台可能没有，这里直接忽略)
  */
 
 #include "plugin.h"
@@ -51,7 +48,8 @@ static void draw_led(int x, int y, bool on) {
 /* 在 LED 下方画标签（比如 "A0"） */
 static void draw_label(int x, int y, const char *label) {
     rb->lcd_set_foreground(COLOR_TEXT);
-    rb->lcd_putsxy(x, y, label, FONT_UI);   /* FONT_UI 是系统字体，够小 */
+    rb->lcd_setfont(FONT_UI);                /* 先设置字体 */
+    rb->lcd_putsxy(x, y, label);            /* 只有3个参数 */
 }
 
 /* ============================================================
@@ -65,6 +63,7 @@ static void draw_ui(void) {
     rb->lcd_clear_display();
     rb->lcd_set_background(COLOR_BG);
     rb->lcd_set_foreground(COLOR_TEXT);
+    rb->lcd_setfont(FONT_UI);
 
     /* ---------- 标题 ---------- */
     rb->lcd_puts(0, 0, "ALT AIR 8800");
@@ -104,13 +103,13 @@ static void draw_ui(void) {
     /* ---------- 状态 LED (12 个) ---------- */
     y = y + LED_SIZE + 8 + LED_GROUP_GAP;
     x = (SCREEN_W - (12 * (LED_SIZE + LED_GAP) - LED_GAP)) / 2;
+    /* 状态标签名称 */
+    const char *names[12] = {"INTE","HLTA","STOP","DBIN","WR","SYNC",
+                             "HLT","OUT","IN","M1","MEMR","POWER"};
     for (i = 0; i < 12; i++) {
         bool on = (mock_status >> (11 - i)) & 1;  /* 低12位有效 */
         draw_led(x, y, on);
-        char label[5];
-        /* 模拟 Altair 的状态标签，简写 */
-        const char *names[12] = {"INTE","HLTA","STOP","DBIN","WR","SYNC","HLT","OUT","IN","M1","MEMR","POWER"};
-        draw_label(x, y + LED_SIZE + 1, names[i % 12]);
+        draw_label(x, y + LED_SIZE + 1, names[i]);
         x += LED_SIZE + LED_GAP;
     }
 
@@ -129,9 +128,8 @@ static void draw_ui(void) {
    对话框（覆盖在主界面上）
    ============================================================ */
 static void show_dialog(const char *title, const char *msg) {
-    /* 简单地在屏幕中央显示文本，不清屏（保留背景 LED） */
     rb->lcd_set_foreground(COLOR_TEXT);
-    /* 可以用一个半透明矩形做背景，这里简化，直接写文字 */
+    rb->lcd_setfont(FONT_UI);
     rb->lcd_puts(5, 3, title);
     rb->lcd_puts(5, 4, msg);
     rb->lcd_update();
@@ -143,7 +141,6 @@ static void show_dialog(const char *title, const char *msg) {
 enum plugin_status plugin_start(const void *parameter) {
     (void)parameter;
     int btn;
-    bool run_asked = false;
 
     while (1) {
         /* 每次循环重新绘制主界面（保证对话框消失后恢复） */
@@ -165,11 +162,14 @@ enum plugin_status plugin_start(const void *parameter) {
                 show_dialog("Running...", "Press any key to stop");
                 rb->button_get(true);   /* 等待任意按键返回主界面 */
                 /* 回到主循环后会自动重绘 */
-            } else if (btn == BUTTON_MENU || btn == BUTTON_POWER) {
+            } else if (btn == BUTTON_MENU) {
                 /* 取消，回到主界面 */
                 continue;
+            } else {
+                /* 其他按键也视为取消 */
+                continue;
             }
-        } else if (btn == BUTTON_MENU || btn == BUTTON_POWER) {
+        } else if (btn == BUTTON_MENU) {
             /* 退出插件 */
             break;
         }

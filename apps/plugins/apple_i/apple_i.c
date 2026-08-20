@@ -344,7 +344,18 @@ enum plugin_status plugin_start(const void *parameter) {
 
     m6502_reset();
     LOG("CPU reset, PC=0x%04X", programcounter);
-    cpu_halted = false;
+    /* Check reset vector */
+    uint8_t vec_l = mem[0xFFFC];
+    uint8_t vec_h = mem[0xFFFD];
+    LOG("Reset vector: 0x%02X%02X = 0x%04X", vec_h, vec_l, (uint16_t)((vec_h<<8)|vec_l));
+    if ((vec_h == 0) && (vec_l == 0)) {
+        /* No valid vector, assume BASIC at E000 */
+        LOG("No reset vector, forcing PC=0xE000 (BASIC entry)");
+        programcounter = 0xE000;
+        cpu_halted = false;
+    } else {
+        cpu_halted = false;
+    }
 
     while (1) {
         if (!cpu_halted) {

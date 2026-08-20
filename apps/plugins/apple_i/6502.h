@@ -202,7 +202,14 @@ static inline void set_flags(uint8_t val) {
 }
 
 /* Instruction implementations */
-static void BRK() { Status |= 0b00010000; }
+static void BRK() {
+    uint16_t ret = programcounter + 1;
+    pushstack(ret >> 8);
+    pushstack(ret & 0xFF);
+    pushstack(Status | 0b00110000);
+    Status |= 0b00000100;  /* SEI */
+    programcounter = dbyte(0xFFFE);
+}
 static void NOP() { programcounter++; }
 static void JAM() { Status |= 0b00010000; }
 
@@ -1133,14 +1140,14 @@ void m6502_reset(void) {
     programcounter = dbyte(0xFFFC);
 }
 
-/* Execute one instruction, return 0 if halted, 1 otherwise */
 int m6502_step(void) {
-    if (Status & 0b00010000) return 0; /* HLT */
     uint8_t opcode = cpu_read(programcounter++);
     void (*func)(void) = instructionArr[opcode];
-    if (func) func();
-    else return 0; /* unknown opcode, halt */
-    return 1;
+    if (func) {
+        func();
+        return 1;
+    }
+    return 0;  /* 只有非法操作码才停机 */
 }
 
 #endif /* M6502_H */

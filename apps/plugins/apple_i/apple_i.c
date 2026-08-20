@@ -361,6 +361,29 @@ enum plugin_status plugin_start(const void *parameter) {
     /* 设置复位向量到 BASIC 入口 (0xE000) */
     mem[0xFFFC] = 0x00;
     mem[0xFFFD] = 0xE0;
+    /* ===== 补全 Woz Monitor 子程序入口 ===== */
+    /* 对于 BASIC 启动时可能调用的 Monitor 子程序，
+    先全部用 RTS (0x60) 占位，防止执行到空地址触发 BRK */
+
+    /* PRBYTE ($FFDC) - 打印十六进制字节 */
+    mem[0xFFDC] = 0x60;  // RTS
+    /* PRHEX ($FFE5) - 打印十六进制字符 */
+    mem[0xFFE5] = 0x60;  // RTS
+    /* GETLINE ($FFCC) - 读取一行 */
+    mem[0xFFCC] = 0x60;  // RTS
+    /* ESC ($FF6A) - 转义处理 */
+    mem[0xFF6A] = 0x60;  // RTS
+    /* 其他常见 Monitor 地址也填 RTS */
+    mem[0xFF69] = 0x60;
+    mem[0xFF70] = 0x60;
+    mem[0xFF75] = 0x60;
+    mem[0xFF80] = 0x60;
+    mem[0xFF90] = 0x60;
+    mem[0xFFA0] = 0x60;
+    mem[0xFFB0] = 0x60;
+    mem[0xFFC0] = 0x60;
+
+    LOG("Woz Monitor stubs filled with RTS");
     LOG("Woz Monitor entry points simulated: KEYIN at $FFD0, COUT at $FFEF");
 
     m6502_reset();

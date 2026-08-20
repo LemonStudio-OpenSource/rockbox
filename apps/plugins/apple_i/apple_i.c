@@ -7,14 +7,15 @@
  *   PLAY           : Enter (Carriage Return)
  *   MENU           : Exit
  *
- * Character set: A-Z, 0-9, space, .:-+*/=();,
+ * Character set: A-Z, 0-9, space, .:-+* / = ( ) ; ,
  * All characters are ASCII 32~95, perfect for Apple I terminal.
  *
- * Note: Font data uses standard 5x7 dot matrix (ASCII 32~95), verified correct.
+ * Note: Font data uses standard 5 by 7 dot matrix (ASCII 32~95), verified.
  * License: This file is for Rockbox plugin development only, GPL v2.
  */
 
 #include "plugin.h"
+#include <stdint.h>
 
 /* ============================================================
    Screen dimensions
@@ -127,7 +128,7 @@ static uint8_t  mock_y  = 0x00;
 /* ============================================================
    Keyboard character selector
    ============================================================ */
-static const char *keyboard_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .:-+*/=();,";
+static const char *keyboard_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .:-+* /=();,";
 static int kb_index = 0;
 
 /* ============================================================

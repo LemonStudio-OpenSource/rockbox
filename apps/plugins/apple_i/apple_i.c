@@ -257,7 +257,7 @@ static uint8_t mem_read(uint16_t addr) {
         if (key_ready) {
             key_ready = 0;
             LOG("KEY read: 0x%02X ('%c')", key_value, key_value >= 32 ? key_value : '.');
-            return key_value;
+            return key_value | 0x80;
         }
         return 0;
     }

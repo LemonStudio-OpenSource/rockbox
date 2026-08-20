@@ -3,13 +3,6 @@
 #include "plugin.h"
 int g_log_counter = 0;
 #define MAX_LOG_COUNT 5000
-#include "6502.h"
-
-/*
- * Apple I Emulator - Enhanced debugging version with logging
- * Logs to /apple_i.log
- */
-
 /* ============================================================
    Logging configuration
    ============================================================ */
@@ -47,6 +40,14 @@ static void log_message(const char *fmt, ...) {
 #else
 #define LOG(fmt, ...) ((void)0)
 #endif
+#include "6502.h"
+
+/*
+ * Apple I Emulator - Enhanced debugging version with logging
+ * Logs to /apple_i.log
+ */
+
+
 
 /* ============================================================
    Screen & colors

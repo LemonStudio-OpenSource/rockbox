@@ -93,3 +93,7 @@ picross
 #if (LCD_DEPTH > 1)
 xrick
 #endif
+
+/*My Altair 8800 Run in Rockbox*/
+altair
+

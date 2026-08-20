@@ -350,20 +350,25 @@ enum plugin_status plugin_start(const void *parameter) {
 
     init_video_text();
 
+    /* ===== 新增：模拟 Woz Monitor 子程序入口 ===== */
+    /* 指向我们的 I/O 处理地址 */
+    mem[0xFFD0] = 0x4C;  // JMP $D010 (读键盘)
+    mem[0xFFD1] = 0x10;
+    mem[0xFFD2] = 0xD0;
+    mem[0xFFEF] = 0x4C;  // JMP $D011 (输出字符)
+    mem[0xFFF0] = 0x11;
+    mem[0xFFF1] = 0xD0;
+    /* 设置复位向量到 BASIC 入口 (0xE000) */
+    mem[0xFFFC] = 0x00;
+    mem[0xFFFD] = 0xE0;
+    LOG("Woz Monitor entry points simulated: KEYIN at $FFD0, COUT at $FFEF");
+
     m6502_reset();
     LOG("CPU reset, PC=0x%04X", programcounter);
-    /* Check reset vector */
-    uint8_t vec_l = mem[0xFFFC];
-    uint8_t vec_h = mem[0xFFFD];
-    LOG("Reset vector: 0x%02X%02X = 0x%04X", vec_h, vec_l, (uint16_t)((vec_h<<8)|vec_l));
-    if ((vec_h == 0) && (vec_l == 0)) {
-        /* No valid vector, assume BASIC at E000 */
-        LOG("No reset vector, forcing PC=0xE000 (BASIC entry)");
-        programcounter = 0xE000;
-        cpu_halted = false;
-    } else {
-        cpu_halted = false;
-    }
+    /* 强制 PC 为 BASIC 入口，以防复位向量未生效 */
+    programcounter = 0xE000;
+    LOG("PC forced to 0xE000 (BASIC entry)");
+    cpu_halted = false;
 
     while (1) {
         if (!cpu_halted) {

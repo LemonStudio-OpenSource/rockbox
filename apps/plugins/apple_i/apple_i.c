@@ -3,9 +3,47 @@
 #include "6502.h"
 
 /*
- * Apple I Emulator - Enhanced debugging version
- * Shows ROM status, CPU registers, and key presses on screen.
+ * Apple I Emulator - Enhanced debugging version with logging
+ * Logs to /apple_i.log
  */
+
+/* ============================================================
+   Logging configuration
+   ============================================================ */
+#define LOG_ENABLED 1   /* set to 0 to disable logging */
+
+#if LOG_ENABLED
+#define LOG_FILE "/apple_i.log"
+
+/* Write a log message (timestamp + message) */
+static void log_message(const char *fmt, ...) {
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    rb->vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    /* Add timestamp (seconds since plugin start) */
+    static long start_ticks = 0;
+    if (start_ticks == 0) {
+        start_ticks = rb->current_tick;
+    }
+    long seconds = (rb->current_tick - start_ticks) / HZ;
+    char full[300];
+    rb->snprintf(full, sizeof(full), "[%lds] %s\n", seconds, buf);
+
+    /* Write to file */
+    int fd = rb->open(LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd >= 0) {
+        rb->write(fd, full, rb->strlen(full));
+        rb->close(fd);
+    }
+}
+
+#define LOG(fmt, ...) log_message(fmt, ##__VA_ARGS__)
+#else
+#define LOG(fmt, ...) ((void)0)
+#endif
 
 /* ============================================================
    Screen & colors
@@ -43,8 +81,8 @@ static int kb_index = 0, kb_total_len = 0;
 static uint8_t key_ready = 0;
 static uint8_t key_value = 0;
 
-/* Terminal geometry - increased top offset to fit status */
-static const int TOP_OFFSET = 24;      /* more space for status */
+/* Terminal geometry */
+static const int TOP_OFFSET = 24;
 static const int BOTTOM_MARGIN = 2;
 static const int LEFT_OFFSET = 0;
 
@@ -55,8 +93,10 @@ static bool init_font(void) {
     fixed_font = rb->font_load("/.rockbox/fonts/10-Fixed.fnt");
     if (!fixed_font) {
         rb->splash(HZ*2, "Failed to load 10-Fixed.fnt");
+        LOG("ERROR: Failed to load 10-Fixed.fnt");
         return false;
     }
+    LOG("Font loaded: 10-Fixed.fnt");
     rb->lcd_setfont(fixed_font);
     int w, h;
     rb->lcd_getstringsize("M", &w, &h);
@@ -72,6 +112,7 @@ static bool init_font(void) {
     if (rows > MAX_ROWS) rows = MAX_ROWS;
     if (rows < 4) rows = 4;
     kb_total_len = rb->strlen(keyboard_chars_row1) + rb->strlen(keyboard_chars_row2);
+    LOG("Terminal: cols=%d rows=%d char_w=%d char_h=%d", cols, rows, char_w, char_h);
     return true;
 }
 
@@ -86,7 +127,6 @@ static char get_kb_char(int idx) {
    ============================================================ */
 static void draw_char_at(int px, int py, char ch, uint16_t color) {
     if (ch == ' ') return;
-    // Force color to white unless it's black (used for inverted char)
     if (color != COLOR_BG) {
         color = COLOR_TEXT;   // enforce white
     }
@@ -132,7 +172,7 @@ static void render_keyboard(void) {
         if (i == kb_index) {
             rb->lcd_set_foreground(COLOR_HIGHLIGHT_BG);
             rb->lcd_fillrect(px - 1, y - 1, char_w + 2, char_h + 2);
-            draw_char_at(px, y, ch, COLOR_BG);  // black text on white bg
+            draw_char_at(px, y, ch, COLOR_BG);
         } else {
             draw_char_at(px, y, ch, COLOR_TEXT);
         }
@@ -215,10 +255,13 @@ static uint8_t mem_read(uint16_t addr) {
     if (addr == 0xD010) {
         if (key_ready) {
             key_ready = 0;
+            LOG("KEY read: 0x%02X ('%c')", key_value, key_value >= 32 ? key_value : '.');
             return key_value;
         }
         return 0;
     }
+    // Uncomment next line for heavy logging (may slow down)
+    // LOG("mem_read addr=%04X", addr);
     return mem[addr];
 }
 
@@ -230,10 +273,14 @@ static void mem_write(uint16_t addr, uint8_t val) {
         if (row < rows && col < cols) {
             char ch = val;
             if (ch < 32) ch = ' ';
-            video[row][col] = ch;
+            if (video[row][col] != ch) {
+                LOG("VIDEO write addr=%04X val=0x%02X ('%c') at (%d,%d)", addr, val, val>=32?val:'.', row, col);
+                video[row][col] = ch;
+            }
         }
     }
     if (addr == 0xD011) {
+        LOG("D011 write val=0x%02X ('%c')", val, val>=32?val:'.');
         video_type_char((char)val);
     }
     mem[addr] = val;
@@ -245,12 +292,14 @@ static void mem_write(uint16_t addr, uint8_t val) {
 static bool load_rom(void) {
     int fd = rb->open("/apple1basic.bin", O_RDONLY);
     if (fd < 0) {
+        LOG("ROM open failed: /apple1basic.bin not found");
         return false;
     }
     size_t size = rb->filesize(fd);
     if (size > 0x2000) size = 0x2000;
     rb->read(fd, mem + 0xE000, size);
     rb->close(fd);
+    LOG("ROM loaded: %d bytes at 0xE000", size);
     return true;
 }
 
@@ -270,6 +319,7 @@ static void init_video_text(void) {
     rb->memcpy(video[2], "PLAY = ENTER", 12);
     cursor_x = 0;
     cursor_y = 3;
+    LOG("Initial video text set");
 }
 
 /* ============================================================
@@ -278,6 +328,8 @@ static void init_video_text(void) {
 enum plugin_status plugin_start(const void *parameter) {
     (void)parameter;
     int btn;
+
+    LOG("=== Apple I Emulator START ===");
 
     if (!init_font()) return PLUGIN_ERROR;
 
@@ -292,6 +344,7 @@ enum plugin_status plugin_start(const void *parameter) {
     init_video_text();
 
     m6502_reset();
+    LOG("CPU reset, PC=0x%04X", programcounter);
     cpu_halted = false;
 
     while (1) {
@@ -299,15 +352,20 @@ enum plugin_status plugin_start(const void *parameter) {
             for (int i = 0; i < 500; i++) {
                 if (!m6502_step()) {
                     cpu_halted = true;
+                    LOG("CPU HALTED (HLT instruction or invalid)");
                     break;
                 }
             }
         }
 
         btn = rb->button_get(false);
-        if (btn == BUTTON_MENU) break;
+        if (btn == BUTTON_MENU) {
+            LOG("MENU pressed, exiting");
+            break;
+        }
 
         if (btn == BUTTON_PLAY) {
+            LOG("PLAY pressed -> ENTER key");
             key_ready = 1;
             key_value = '\r';
         } else if (btn == BUTTON_SCROLL_FWD) {
@@ -318,6 +376,7 @@ enum plugin_status plugin_start(const void *parameter) {
             if (kb_index < 0) kb_index = kb_total_len - 1;
         } else if (btn == BUTTON_SELECT) {
             char ch = get_kb_char(kb_index);
+            LOG("SELECT pressed -> key '%c' (0x%02X)", ch, ch);
             key_ready = 1;
             key_value = (uint8_t)ch;
         }
@@ -326,5 +385,6 @@ enum plugin_status plugin_start(const void *parameter) {
         rb->yield();
     }
 
+    LOG("=== Apple I Emulator EXIT ===");
     return PLUGIN_OK;
 }

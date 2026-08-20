@@ -261,6 +261,10 @@ static uint8_t mem_read(uint16_t addr) {
         }
         return 0;
     }
+    if (addr == 0xD011) {
+        /* 键盘控制寄存器：bit 7 = 1 表示有按键等待 */
+        return key_ready ? 0x80 : 0x00;
+    }
     return mem[addr];
 }
 
@@ -278,8 +282,9 @@ static void mem_write(uint16_t addr, uint8_t val) {
             }
         }
     }
-    if (addr == 0xD011) {
-        LOG("D011 write val=0x%02X ('%c')", val, val>=32?val:'.');
+    /* Apple I 显示端口：$D012 是标准地址，$D0F2 因不完全解码等效 */
+    if (addr == 0xD011 || addr == 0xD012 || addr == 0xD0F2) {
+        if (addr == 0xD011) LOG("D011 write val=0x%02X ('%c')", val, val>=32?val:'.');
         video_type_char((char)val);
     }
     mem[addr] = val;

@@ -1,59 +1,51 @@
-/***************************************************************************
- *             __________               __   ___.
- *   Open      \______   \ ____   ____ |  | _\_ |__   _______  ___
- *   Source     |       _//  _ \_/ ___\|  |/ /| __ \ /  _ \  \/  /
- *   Jukebox    |    |   (  <_> )  \___|    < | \_\ (  <_> > <  <
- *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
- *                     \/            \/     \/    \/            \/
+/*
+ * Apple I Emulator V0.1 - Terminal UI Preview
+ * Key mappings:
+ *   Scroll Wheel   : Select character
+ *   SELECT         : Input selected character (overwrites current cursor pos)
+ *   LEFT/RIGHT     : Move cursor left/right
+ *   PLAY           : Enter (Carriage Return)
+ *   MENU           : Exit
  *
- * Apple I 模拟器 V0.1 - 终端 UI 预览版
- * 按键映射：
- *   滚轮          : 选择字符
- *   SELECT        : 输入选中的字符（覆盖当前光标位置）
- *   左/右 (上一曲/下一曲) : 光标左右移动
- *   PLAY          : 回车 (ENTER)
- *   MENU          : 退出
+ * Character set: A-Z, 0-9, space, .:-+*/=();,
+ * All characters are ASCII 32~95, perfect for Apple I terminal.
  *
- * 字符集：A-Z, 0-9, 空格, .:-+*/=();,
- * 所有字符均为 ASCII 32~95，完美适配 Apple I 终端。
- *
- * 注：字模数据采用标准的 5x7 点阵（ASCII 32~95），已验证正确。
- * 
- * 版权声明：此文件仅用于 Rockbox 插件开发，遵循 GPL v2 许可。
- ***************************************************************************/
+ * Note: Font data uses standard 5x7 dot matrix (ASCII 32~95), verified correct.
+ * License: This file is for Rockbox plugin development only, GPL v2.
+ */
 
 #include "plugin.h"
 
 /* ============================================================
-   屏幕尺寸
+   Screen dimensions
    ============================================================ */
 #define SCREEN_W 220
 #define SCREEN_H 176
 
 /* ============================================================
-   终端参数（5x7 点阵）
+   Terminal parameters (5x7 dot matrix)
    ============================================================ */
 #define COLS 40
 #define ROWS 24
 #define CHAR_W 5
 #define CHAR_H 7
-#define TERM_X_OFFSET ((SCREEN_W - (COLS * CHAR_W)) / 2)  /* 左右居中，留 10px 边距 */
-#define TERM_Y_OFFSET 16                                  /* 顶部留 16px 给状态栏 */
+#define TERM_X_OFFSET ((SCREEN_W - (COLS * CHAR_W)) / 2)
+#define TERM_Y_OFFSET 16
 
 /* ============================================================
-   颜色定义（RGB565）
+   Color definitions (RGB565)
    ============================================================ */
-#define COLOR_BG      0x0000    /* 黑色背景 */
-#define COLOR_TEXT    0x00FF    /* 绿色字符（Apple I 经典绿色） */
-#define COLOR_CURSOR  0xFFFF    /* 白色光标 */
-#define COLOR_LABEL   0x8888    /* 灰色标签 */
+#define COLOR_BG      0x0000    /* Black */
+#define COLOR_TEXT    0x00FF    /* Green (Apple I classic) */
+#define COLOR_CURSOR  0xFFFF    /* White */
+#define COLOR_LABEL   0x8888    /* Gray */
 
 /* ============================================================
-   标准 5x7 点阵字模表（ASCII 32~95）
-   数据来源：Adafruit GFX 库及社区广泛验证，无误。
+   Standard 5x7 dot matrix font (ASCII 32~95)
+   Data source: Adafruit GFX library and widely verified.
    ============================================================ */
 static const unsigned char font5x7[][5] = {
-    /* 32 空格 */ {0x00, 0x00, 0x00, 0x00, 0x00},
+    /* 32 space */ {0x00, 0x00, 0x00, 0x00, 0x00},
     /* 33 !     */ {0x00, 0x00, 0x5F, 0x00, 0x00},
     /* 34 "     */ {0x00, 0x07, 0x00, 0x07, 0x00},
     /* 35 #     */ {0x14, 0x7F, 0x14, 0x7F, 0x14},
@@ -120,26 +112,26 @@ static const unsigned char font5x7[][5] = {
 };
 
 /* ============================================================
-   虚拟终端显存 (40x24)
+   Virtual terminal video memory (40x24)
    ============================================================ */
-static char video[ROWS][COLS + 1]; /* +1 留 \0 结尾，方便调试 */
+static char video[ROWS][COLS + 1];
 static int cursor_x = 0;
 static int cursor_y = 0;
 
-/* 模拟的 CPU 状态（仅做展示，占位） */
+/* Placeholder CPU state */
 static uint16_t mock_pc = 0x0100;
 static uint8_t  mock_a  = 0x00;
 static uint8_t  mock_x  = 0x00;
 static uint8_t  mock_y  = 0x00;
 
 /* ============================================================
-   键盘字符选择器（可输入的 ASCII 字符集）
+   Keyboard character selector
    ============================================================ */
 static const char *keyboard_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .:-+*/=();,";
-static int kb_index = 0;        /* 当前高亮字符在字符串中的位置 */
+static int kb_index = 0;
 
 /* ============================================================
-   绘制单个 5x7 点阵字符（空格直接跳过，保持黑色背景）
+   Draw a single 5x7 character (skip space to keep black background)
    ============================================================ */
 static void draw_char_at(int px, int py, char ch, uint16_t color)
 {
@@ -160,18 +152,18 @@ static void draw_char_at(int px, int py, char ch, uint16_t color)
 }
 
 /* ============================================================
-   绘制整个终端屏幕
+   Render the entire terminal screen
    ============================================================ */
 static void render_terminal(void)
 {
     int px = TERM_X_OFFSET;
     int py = TERM_Y_OFFSET;
 
-    /* 填充终端背景（黑色） */
+    /* Fill terminal background (black) */
     rb->lcd_set_foreground(COLOR_BG);
     rb->lcd_fillrect(px, py, COLS * CHAR_W, ROWS * CHAR_H);
 
-    /* 绘制所有字符（空格会被跳过，保留黑色背景） */
+    /* Draw all characters (spaces are skipped) */
     for (int row = 0; row < ROWS; row++) {
         for (int col = 0; col < COLS; col++) {
             char ch = video[row][col];
@@ -182,7 +174,7 @@ static void render_terminal(void)
         }
     }
 
-    /* 绘制光标（白色下划线） */
+    /* Draw cursor (white underline) */
     if (cursor_x < COLS && cursor_y < ROWS) {
         int cx = px + cursor_x * CHAR_W;
         int cy = py + cursor_y * CHAR_H + CHAR_H - 1;
@@ -192,7 +184,7 @@ static void render_terminal(void)
 }
 
 /* ============================================================
-   绘制键盘选择器（屏幕底部）
+   Render keyboard selector at bottom
    ============================================================ */
 static void render_keyboard(void)
 {
@@ -221,7 +213,7 @@ static void render_keyboard(void)
 }
 
 /* ============================================================
-   绘制状态栏
+   Render status bar
    ============================================================ */
 static void render_status(void)
 {
@@ -235,7 +227,7 @@ static void render_status(void)
 }
 
 /* ============================================================
-   UI 主绘制函数
+   Main UI drawing function
    ============================================================ */
 static void draw_ui(void)
 {
@@ -250,12 +242,12 @@ static void draw_ui(void)
 }
 
 /* ============================================================
-   向终端输入一个字符（模拟键盘输入）
+   Type a character into the terminal (simulate keyboard input)
    ============================================================ */
 static void type_char(char ch)
 {
     if (ch == '\r') {
-        /* 回车：光标移到下一行，若到底则滚动 */
+        /* Carriage return */
         cursor_x = 0;
         if (cursor_y < ROWS - 1) {
             cursor_y++;
@@ -269,7 +261,7 @@ static void type_char(char ch)
     }
 
     if (ch >= 32 && ch <= 95) {
-        /* 覆盖当前光标位置 */
+        /* Overwrite current cursor position */
         video[cursor_y][cursor_x] = ch;
         cursor_x++;
         if (cursor_x >= COLS) {
@@ -287,19 +279,19 @@ static void type_char(char ch)
 }
 
 /* ============================================================
-   插件入口
+   Plugin entry point
    ============================================================ */
 enum plugin_status plugin_start(const void *parameter)
 {
     (void)parameter;
     int btn;
 
-    /* 清空显存 */
+    /* Clear video memory */
     for (int r = 0; r < ROWS; r++) {
         rb->memset(video[r], ' ', COLS);
         video[r][COLS] = '\0';
     }
-    /* 欢迎文字 */
+    /* Welcome text */
     rb->strcpy(video[0], "  WELCOME TO APPLE I EMULATOR       ");
     rb->strcpy(video[1], "  TYPE 'HELLO' AND PRESS ENTER     ");
     rb->strcpy(video[2], "  TO SEE THE MAGIC!                ");
@@ -325,7 +317,6 @@ enum plugin_status plugin_start(const void *parameter)
             char ch = keyboard_chars[kb_index];
             type_char(ch);
         } else if (btn == BUTTON_LEFT) {
-            /* 光标左移 */
             if (cursor_x > 0) {
                 cursor_x--;
             } else if (cursor_y > 0) {
@@ -333,7 +324,6 @@ enum plugin_status plugin_start(const void *parameter)
                 cursor_x = COLS - 1;
             }
         } else if (btn == BUTTON_RIGHT) {
-            /* 光标右移 */
             if (cursor_x < COLS - 1) {
                 cursor_x++;
             } else if (cursor_y < ROWS - 1) {

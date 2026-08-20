@@ -280,10 +280,10 @@ enum plugin_status plugin_start(const void *parameter)
 
         if (btn == BUTTON_MENU) break;
         else if (btn == BUTTON_PLAY) type_char('\r');
-        else if (btn == BUTTON_SCROLL_FWD || btn == BUTTON_SCROLL_FWD_REPEAT) {
+        else if (btn == BUTTON_SCROLL_FWD || btn == BUTTON_SCROLL_FWD) {
             kb_index++;
             if (kb_index >= kb_total_len) kb_index = 0;
-        } else if (btn == BUTTON_SCROLL_BACK || btn == BUTTON_SCROLL_BACK_REPEAT) {
+        } else if (btn == BUTTON_SCROLL_BACK || btn == BUTTON_SCROLL_BACK) {
             kb_index--;
             if (kb_index < 0) kb_index = kb_total_len - 1;
         } else if (btn == BUTTON_SELECT) {

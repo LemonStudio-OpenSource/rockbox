@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdarg.h>
 #include "plugin.h"
 #include "6502.h"
 
@@ -26,9 +27,9 @@ static void log_message(const char *fmt, ...) {
     /* Add timestamp (seconds since plugin start) */
     static long start_ticks = 0;
     if (start_ticks == 0) {
-        start_ticks = rb->current_tick;
+        start_ticks = *rb->current_tick;   /* dereference pointer */
     }
-    long seconds = (rb->current_tick - start_ticks) / HZ;
+    long seconds = (*rb->current_tick - start_ticks) / HZ;
     char full[300];
     rb->snprintf(full, sizeof(full), "[%lds] %s\n", seconds, buf);
 
@@ -260,8 +261,6 @@ static uint8_t mem_read(uint16_t addr) {
         }
         return 0;
     }
-    // Uncomment next line for heavy logging (may slow down)
-    // LOG("mem_read addr=%04X", addr);
     return mem[addr];
 }
 

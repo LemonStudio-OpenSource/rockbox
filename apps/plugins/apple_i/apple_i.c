@@ -2,8 +2,8 @@
 #include "plugin.h"
 
 /*
- * Apple I Emulator V0.1 - Terminal UI (System Fixed Font)
- * Uses FONT_SYSFIXED for reliable display.
+ * Apple I Emulator V0.1 - Terminal UI (Explicit 10-Fixed Font)
+ * Explicitly loads /.rockbox/fonts/10-Fixed.fnt
  */
 
 /* ============================================================
@@ -21,21 +21,17 @@
 #define COLOR_LABEL   0x8410
 
 /* ============================================================
-   Video memory (max size, actual usage limited by cols/rows)
+   Video memory
    ============================================================ */
 #define MAX_COLS 40
 #define MAX_ROWS 24
 static char video[MAX_ROWS][MAX_COLS + 1];
 
-/* Actual terminal size, set at runtime */
 static int cols = 0;
 static int rows = 0;
-
-/* Cursor position */
 static int cursor_x = 0;
 static int cursor_y = 0;
 
-/* Placeholder CPU state */
 static uint16_t mock_pc = 0x0100;
 static uint8_t  mock_a  = 0x00;
 static uint8_t  mock_x  = 0x00;
@@ -47,43 +43,58 @@ static uint8_t  mock_y  = 0x00;
 static const char *keyboard_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .:-+* /=();,";
 static int kb_index = 0;
 
-/* Font dimensions */
+/* Font handle and dimensions */
+static struct font *fixed_font = NULL;
 static int char_w = 0;
 static int char_h = 0;
 
 /* ============================================================
-   Initialize font and terminal size
+   Explicitly load 10-Fixed font
    ============================================================ */
-static void init_font(void)
+static bool init_font(void)
 {
-    /* Use the system fixed-width font */
-    rb->lcd_setfont(FONT_SYSFIXED);
-    char_w = rb->font_get_width(FONT_SYSFIXED);
-    char_h = rb->font_get_height(FONT_SYSFIXED);
+    /* Load font file explicitly */
+    fixed_font = rb->font_load("/.rockbox/fonts/10-Fixed.fnt");
+    if (!fixed_font) {
+        rb->splash(HZ*2, "Failed to load 10-Fixed.fnt");
+        return false;
+    }
 
-    /* If get_width/height fail, fallback to reasonable defaults */
-    if (char_w <= 0) char_w = 6;
-    if (char_h <= 0) char_h = 10;
+    /* Set the font */
+    rb->lcd_setfont(fixed_font);
 
-    /* Compute columns and rows, leave 16px for status bar at top */
-    cols = (SCREEN_W - 4) / char_w;   /* small margin */
+    /* Get character dimensions from font */
+    int w, h;
+    rb->lcd_getstringsize("M", &w, &h);
+    char_w = w;
+    char_h = h;
+
+    if (char_w <= 0 || char_h <= 0) {
+        char_w = 6;
+        char_h = 10;
+    }
+
+    /* Compute terminal size */
+    cols = (SCREEN_W - 4) / char_w;
     if (cols > MAX_COLS) cols = MAX_COLS;
-    if (cols < 10) cols = 10;         /* minimum */
+    if (cols < 10) cols = 10;
 
-    rows = (SCREEN_H - 16 - 4) / char_h; /* status takes 16px, bottom margin */
+    rows = (SCREEN_H - 16 - 4) / char_h;
     if (rows > MAX_ROWS) rows = MAX_ROWS;
     if (rows < 4) rows = 4;
+
+    return true;
 }
 
 /* ============================================================
-   Draw a character using system font at pixel coords
+   Draw a character using loaded font
    ============================================================ */
 static void draw_char_at(int px, int py, char ch, uint16_t color)
 {
     if (ch == ' ') return;
     char str[2] = {ch, 0};
     rb->lcd_set_foreground(color);
-    rb->lcd_setfont(FONT_SYSFIXED);
+    rb->lcd_setfont(fixed_font);
     rb->lcd_putsxy(px, py, str);
 }
 
@@ -92,14 +103,12 @@ static void draw_char_at(int px, int py, char ch, uint16_t color)
    ============================================================ */
 static void render_terminal(void)
 {
-    int px = 2;   /* small left margin */
-    int py = 16;  /* status bar height */
+    int px = 2;
+    int py = 16;
 
-    /* Clear terminal area */
     rb->lcd_set_foreground(COLOR_BG);
     rb->lcd_fillrect(px, py, cols * char_w, rows * char_h);
 
-    /* Draw characters */
     for (int row = 0; row < rows; row++) {
         for (int col = 0; col < cols; col++) {
             char ch = video[row][col];
@@ -110,7 +119,6 @@ static void render_terminal(void)
         }
     }
 
-    /* Draw cursor (underline) */
     if (cursor_x < cols && cursor_y < rows) {
         int cx = px + cursor_x * char_w;
         int cy = py + cursor_y * char_h + char_h - 2;
@@ -126,14 +134,13 @@ static void render_keyboard(void)
 {
     int y = 16 + rows * char_h + 2;
     rb->lcd_set_foreground(COLOR_LABEL);
-    rb->lcd_setfont(FONT_SYSFIXED);
-    rb->lcd_puts(0, 7, "KB: ");  /* using text row coordinates */
+    rb->lcd_setfont(fixed_font);
+    rb->lcd_puts(0, 7, "KB: ");
 
     int len = rb->strlen(keyboard_chars);
     int start_x = 24;
     int char_spacing = char_w + 1;
-    int total_width = len * char_spacing;
-    int offset_x = (SCREEN_W - start_x - total_width) / 2 + start_x;
+    int offset_x = (SCREEN_W - start_x - len * char_spacing) / 2 + start_x;
 
     for (int i = 0; i < len; i++) {
         int px = offset_x + i * char_spacing;
@@ -155,7 +162,7 @@ static void render_status(void)
 {
     char buf[64];
     rb->lcd_set_foreground(COLOR_TEXT);
-    rb->lcd_setfont(FONT_SYSFIXED);
+    rb->lcd_setfont(fixed_font);
     rb->snprintf(buf, sizeof(buf), "PC:%04X A:%02X X:%02X Y:%02X",
                  mock_pc, mock_a, mock_x, mock_y);
     rb->lcd_puts(0, 0, buf);
@@ -176,7 +183,7 @@ static void draw_ui(void)
 }
 
 /* ============================================================
-   Type a character (with scrolling)
+   Type a character
    ============================================================ */
 static void type_char(char ch)
 {
@@ -215,14 +222,14 @@ enum plugin_status plugin_start(const void *parameter)
     (void)parameter;
     int btn;
 
-    init_font();
+    if (!init_font()) {
+        return PLUGIN_ERROR;
+    }
 
-    /* Clear video memory */
     for (int r = 0; r < MAX_ROWS; r++) {
         rb->memset(video[r], ' ', MAX_COLS);
         video[r][MAX_COLS] = '\0';
     }
-    /* Set initial welcome text (within actual cols) */
     rb->strcpy(video[0], "WELCOME TO APPLE I");
     rb->strcpy(video[1], "TYPE HELLO");
     rb->strcpy(video[2], "PRESS ENTER");

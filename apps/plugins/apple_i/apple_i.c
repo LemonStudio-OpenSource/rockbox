@@ -2,13 +2,8 @@
 #include "plugin.h"
 
 /*
- * Apple I Emulator V0.1 - Terminal UI (Adafruit Font)
- * Key mappings:
- *   Scroll Wheel   : Select character
- *   SELECT         : Input selected character
- *   LEFT/RIGHT     : Move cursor
- *   PLAY           : Enter
- *   MENU           : Exit
+ * Apple I Emulator V0.1 - Terminal UI (System Fixed Font)
+ * Uses FONT_SYSFIXED for reliable display.
  */
 
 /* ============================================================
@@ -18,169 +13,29 @@
 #define SCREEN_H 176
 
 /* ============================================================
-   Terminal parameters (5x7 dot matrix)
-   ============================================================ */
-#define COLS 40
-#define ROWS 22
-#define CHAR_W 5
-#define CHAR_H 7
-#define TERM_X_OFFSET ((SCREEN_W - (COLS * CHAR_W)) / 2)
-#define TERM_Y_OFFSET 16
-
-/* ============================================================
    Colors (RGB565)
    ============================================================ */
-#define COLOR_BG      0x0000    /* Black */
-#define COLOR_TEXT    0x07E0    /* Green (Apple I classic) */
-#define COLOR_CURSOR  0xFFFF    /* White */
-#define COLOR_LABEL   0x8410    /* Gray */
+#define COLOR_BG      0x0000
+#define COLOR_TEXT    0x07E0    /* Green */
+#define COLOR_CURSOR  0xFFFF
+#define COLOR_LABEL   0x8410
 
 /* ============================================================
-   Standard 5x7 font (ASCII 0~127) - Adafruit GFX official
+   Video memory (max size, actual usage limited by cols/rows)
    ============================================================ */
-static const unsigned char font5x7[][5] = {
-    /* 0x00-0x1F: control chars (all blank) */
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    {0x00,0x00,0x00,0x00,0x00},
-    /* 0x20-0x3F:  space, ! " # $ % & ' ( ) * + , - . / */
-    {0x00,0x00,0x00,0x00,0x00}, // 0x20 space
-    {0x00,0x00,0x5F,0x00,0x00}, // 0x21 !
-    {0x00,0x07,0x00,0x07,0x00}, // 0x22 "
-    {0x14,0x7F,0x14,0x7F,0x14}, // 0x23 #
-    {0x24,0x2A,0x7F,0x2A,0x12}, // 0x24 $
-    {0x23,0x13,0x08,0x64,0x62}, // 0x25 %
-    {0x36,0x49,0x56,0x20,0x50}, // 0x26 &
-    {0x00,0x08,0x07,0x03,0x00}, // 0x27 '
-    {0x00,0x1C,0x22,0x41,0x00}, // 0x28 (
-    {0x00,0x41,0x22,0x1C,0x00}, // 0x29 )
-    {0x2A,0x1C,0x7F,0x1C,0x2A}, // 0x2A *
-    {0x08,0x08,0x3E,0x08,0x08}, // 0x2B +
-    {0x00,0x80,0x70,0x30,0x00}, // 0x2C ,
-    {0x08,0x08,0x08,0x08,0x08}, // 0x2D -
-    {0x00,0x00,0x60,0x60,0x00}, // 0x2E .
-    {0x20,0x10,0x08,0x04,0x02}, // 0x2F /
-    /* 0x30-0x3F: 0 1 2 3 4 5 6 7 8 9 : ; < = > ? */
-    {0x3E,0x51,0x49,0x45,0x3E}, // 0x30 0
-    {0x00,0x42,0x7F,0x40,0x00}, // 0x31 1
-    {0x72,0x49,0x49,0x49,0x46}, // 0x32 2
-    {0x21,0x41,0x49,0x4D,0x33}, // 0x33 3
-    {0x18,0x14,0x12,0x7F,0x10}, // 0x34 4
-    {0x27,0x45,0x45,0x45,0x39}, // 0x35 5
-    {0x3C,0x4A,0x49,0x49,0x31}, // 0x36 6
-    {0x41,0x21,0x11,0x09,0x07}, // 0x37 7
-    {0x36,0x49,0x49,0x49,0x36}, // 0x38 8
-    {0x46,0x49,0x49,0x29,0x1E}, // 0x39 9
-    {0x00,0x00,0x14,0x00,0x00}, // 0x3A :
-    {0x00,0x40,0x34,0x00,0x00}, // 0x3B ;
-    {0x00,0x08,0x14,0x22,0x41}, // 0x3C <
-    {0x14,0x14,0x14,0x14,0x14}, // 0x3D =
-    {0x00,0x41,0x22,0x14,0x08}, // 0x3E >
-    {0x02,0x01,0x59,0x09,0x06}, // 0x3F ?
-    /* 0x40-0x5F: @ A B C D E F G H I J K L M N O P Q R S T U V W X Y Z [ \ ] ^ _ */
-    {0x3E,0x41,0x5D,0x59,0x4E}, // 0x40 @
-    {0x7C,0x12,0x11,0x12,0x7C}, // 0x41 A
-    {0x7F,0x49,0x49,0x49,0x36}, // 0x42 B
-    {0x3E,0x41,0x41,0x41,0x22}, // 0x43 C
-    {0x7F,0x41,0x41,0x41,0x3E}, // 0x44 D
-    {0x7F,0x49,0x49,0x49,0x41}, // 0x45 E
-    {0x7F,0x09,0x09,0x09,0x01}, // 0x46 F
-    {0x3E,0x41,0x41,0x51,0x73}, // 0x47 G
-    {0x7F,0x08,0x08,0x08,0x7F}, // 0x48 H
-    {0x00,0x41,0x7F,0x41,0x00}, // 0x49 I
-    {0x20,0x40,0x41,0x3F,0x01}, // 0x4A J
-    {0x7F,0x08,0x14,0x22,0x41}, // 0x4B K
-    {0x7F,0x40,0x40,0x40,0x40}, // 0x4C L
-    {0x7F,0x02,0x1C,0x02,0x7F}, // 0x4D M
-    {0x7F,0x04,0x08,0x10,0x7F}, // 0x4E N
-    {0x3E,0x41,0x41,0x41,0x3E}, // 0x4F O
-    {0x7F,0x09,0x09,0x09,0x06}, // 0x50 P
-    {0x3E,0x41,0x51,0x21,0x5E}, // 0x51 Q
-    {0x7F,0x09,0x19,0x29,0x46}, // 0x52 R
-    {0x26,0x49,0x49,0x49,0x32}, // 0x53 S
-    {0x03,0x01,0x7F,0x01,0x03}, // 0x54 T
-    {0x3F,0x40,0x40,0x40,0x3F}, // 0x55 U
-    {0x1F,0x20,0x40,0x20,0x1F}, // 0x56 V
-    {0x3F,0x40,0x38,0x40,0x3F}, // 0x57 W
-    {0x63,0x14,0x08,0x14,0x63}, // 0x58 X
-    {0x03,0x04,0x78,0x04,0x03}, // 0x59 Y
-    {0x61,0x59,0x49,0x4D,0x43}, // 0x5A Z
-    {0x00,0x7F,0x41,0x41,0x41}, // 0x5B [
-    {0x02,0x04,0x08,0x10,0x20}, // 0x5C backslash
-    {0x00,0x41,0x41,0x41,0x7F}, // 0x5D ]
-    {0x04,0x02,0x01,0x02,0x04}, // 0x5E ^
-    {0x40,0x40,0x40,0x40,0x40}, // 0x5F _
-    /* 0x60-0x7F: ` a b c d e f g h i j k l m n o p q r s t u v w x y z { | } ~ DEL */
-    {0x00,0x03,0x07,0x08,0x00}, // 0x60 `
-    {0x20,0x54,0x54,0x78,0x40}, // 0x61 a
-    {0x7F,0x28,0x44,0x44,0x38}, // 0x62 b
-    {0x38,0x44,0x44,0x44,0x28}, // 0x63 c
-    {0x38,0x44,0x44,0x28,0x7F}, // 0x64 d
-    {0x38,0x54,0x54,0x54,0x18}, // 0x65 e
-    {0x00,0x08,0x7E,0x09,0x02}, // 0x66 f
-    {0x18,0xA4,0xA4,0x9C,0x78}, // 0x67 g
-    {0x7F,0x08,0x04,0x04,0x78}, // 0x68 h
-    {0x00,0x44,0x7D,0x40,0x00}, // 0x69 i
-    {0x20,0x40,0x40,0x3D,0x00}, // 0x6A j
-    {0x7F,0x10,0x28,0x44,0x00}, // 0x6B k
-    {0x00,0x41,0x7F,0x40,0x00}, // 0x6C l
-    {0x7C,0x04,0x78,0x04,0x78}, // 0x6D m
-    {0x7C,0x08,0x04,0x04,0x78}, // 0x6E n
-    {0x38,0x44,0x44,0x44,0x38}, // 0x6F o
-    {0xFC,0x18,0x24,0x24,0x18}, // 0x70 p
-    {0x18,0x24,0x24,0x18,0xFC}, // 0x71 q
-    {0x7C,0x08,0x04,0x04,0x08}, // 0x72 r
-    {0x48,0x54,0x54,0x54,0x24}, // 0x73 s
-    {0x04,0x04,0x3F,0x44,0x24}, // 0x74 t
-    {0x3C,0x40,0x40,0x20,0x7C}, // 0x75 u
-    {0x1C,0x20,0x40,0x20,0x1C}, // 0x76 v
-    {0x3C,0x40,0x30,0x40,0x3C}, // 0x77 w
-    {0x44,0x28,0x10,0x28,0x44}, // 0x78 x
-    {0x4C,0x90,0x90,0x90,0x7C}, // 0x79 y
-    {0x44,0x64,0x54,0x4C,0x44}, // 0x7A z
-    {0x00,0x08,0x36,0x41,0x00}, // 0x7B {
-    {0x00,0x00,0x77,0x00,0x00}, // 0x7C |
-    {0x00,0x41,0x36,0x08,0x00}, // 0x7D }
-    {0x02,0x01,0x02,0x04,0x02}, // 0x7E ~
-    {0x3C,0x26,0x23,0x26,0x3C}  // 0x7F
-};
+#define MAX_COLS 40
+#define MAX_ROWS 24
+static char video[MAX_ROWS][MAX_COLS + 1];
 
-/* ============================================================
-   Video memory
-   ============================================================ */
-static char video[ROWS][COLS + 1];
+/* Actual terminal size, set at runtime */
+static int cols = 0;
+static int rows = 0;
+
+/* Cursor position */
 static int cursor_x = 0;
 static int cursor_y = 0;
 
+/* Placeholder CPU state */
 static uint16_t mock_pc = 0x0100;
 static uint8_t  mock_a  = 0x00;
 static uint8_t  mock_x  = 0x00;
@@ -192,26 +47,44 @@ static uint8_t  mock_y  = 0x00;
 static const char *keyboard_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .:-+* /=();,";
 static int kb_index = 0;
 
+/* Font dimensions */
+static int char_w = 0;
+static int char_h = 0;
+
 /* ============================================================
-   Draw a character at pixel position (x,y)
+   Initialize font and terminal size
+   ============================================================ */
+static void init_font(void)
+{
+    /* Use the system fixed-width font */
+    rb->lcd_setfont(FONT_SYSFIXED);
+    char_w = rb->font_get_width(FONT_SYSFIXED);
+    char_h = rb->font_get_height(FONT_SYSFIXED);
+
+    /* If get_width/height fail, fallback to reasonable defaults */
+    if (char_w <= 0) char_w = 6;
+    if (char_h <= 0) char_h = 10;
+
+    /* Compute columns and rows, leave 16px for status bar at top */
+    cols = (SCREEN_W - 4) / char_w;   /* small margin */
+    if (cols > MAX_COLS) cols = MAX_COLS;
+    if (cols < 10) cols = 10;         /* minimum */
+
+    rows = (SCREEN_H - 16 - 4) / char_h; /* status takes 16px, bottom margin */
+    if (rows > MAX_ROWS) rows = MAX_ROWS;
+    if (rows < 4) rows = 4;
+}
+
+/* ============================================================
+   Draw a character using system font at pixel coords
    ============================================================ */
 static void draw_char_at(int px, int py, char ch, uint16_t color)
 {
     if (ch == ' ') return;
-
-    int idx = (unsigned char)ch;   /* Use ASCII code directly */
-    if (idx < 0 || idx >= 128) return;
-
+    char str[2] = {ch, 0};
     rb->lcd_set_foreground(color);
-    for (int row = 0; row < 7; row++) {
-        uint8_t line = font5x7[idx][row];
-        for (int col = 0; col < 5; col++) {
-            /* If characters appear mirrored, change (4-col) to (col) below */
-            if (line & (1 << (4 - col))) {
-                rb->lcd_fillrect(px + col, py + row, 1, 1);
-            }
-        }
-    }
+    rb->lcd_setfont(FONT_SYSFIXED);
+    rb->lcd_putsxy(px, py, str);
 }
 
 /* ============================================================
@@ -219,30 +92,30 @@ static void draw_char_at(int px, int py, char ch, uint16_t color)
    ============================================================ */
 static void render_terminal(void)
 {
-    int px = TERM_X_OFFSET;
-    int py = TERM_Y_OFFSET;
+    int px = 2;   /* small left margin */
+    int py = 16;  /* status bar height */
 
-    /* Clear background */
+    /* Clear terminal area */
     rb->lcd_set_foreground(COLOR_BG);
-    rb->lcd_fillrect(px, py, COLS * CHAR_W, ROWS * CHAR_H);
+    rb->lcd_fillrect(px, py, cols * char_w, rows * char_h);
 
     /* Draw characters */
-    for (int row = 0; row < ROWS; row++) {
-        for (int col = 0; col < COLS; col++) {
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++) {
             char ch = video[row][col];
             if (ch == 0) ch = ' ';
-            int x = px + col * CHAR_W;
-            int y = py + row * CHAR_H;
+            int x = px + col * char_w;
+            int y = py + row * char_h;
             draw_char_at(x, y, ch, COLOR_TEXT);
         }
     }
 
-    /* Draw cursor */
-    if (cursor_x < COLS && cursor_y < ROWS) {
-        int cx = px + cursor_x * CHAR_W;
-        int cy = py + cursor_y * CHAR_H + CHAR_H - 1;
+    /* Draw cursor (underline) */
+    if (cursor_x < cols && cursor_y < rows) {
+        int cx = px + cursor_x * char_w;
+        int cy = py + cursor_y * char_h + char_h - 2;
         rb->lcd_set_foreground(COLOR_CURSOR);
-        rb->lcd_fillrect(cx, cy, CHAR_W, 1);
+        rb->lcd_fillrect(cx, cy, char_w, 1);
     }
 }
 
@@ -251,22 +124,23 @@ static void render_terminal(void)
    ============================================================ */
 static void render_keyboard(void)
 {
-    int y = TERM_Y_OFFSET + ROWS * CHAR_H + 2;
+    int y = 16 + rows * char_h + 2;
     rb->lcd_set_foreground(COLOR_LABEL);
-    rb->lcd_setfont(FONT_UI);
-    rb->lcd_puts(0, 7, "KB: ");
+    rb->lcd_setfont(FONT_SYSFIXED);
+    rb->lcd_puts(0, 7, "KB: ");  /* using text row coordinates */
 
     int len = rb->strlen(keyboard_chars);
     int start_x = 24;
-    int char_spacing = 7;
-    int offset_x = (SCREEN_W - start_x - len * char_spacing) / 2 + start_x;
+    int char_spacing = char_w + 1;
+    int total_width = len * char_spacing;
+    int offset_x = (SCREEN_W - start_x - total_width) / 2 + start_x;
 
     for (int i = 0; i < len; i++) {
         int px = offset_x + i * char_spacing;
         char ch = keyboard_chars[i];
         if (i == kb_index) {
             rb->lcd_set_foreground(COLOR_CURSOR);
-            rb->lcd_fillrect(px - 1, y - 1, CHAR_W + 2, CHAR_H + 2);
+            rb->lcd_fillrect(px - 1, y - 1, char_w + 2, char_h + 2);
             draw_char_at(px, y, ch, COLOR_BG);
         } else {
             draw_char_at(px, y, ch, COLOR_TEXT);
@@ -281,11 +155,11 @@ static void render_status(void)
 {
     char buf[64];
     rb->lcd_set_foreground(COLOR_TEXT);
-    rb->lcd_setfont(FONT_UI);
+    rb->lcd_setfont(FONT_SYSFIXED);
     rb->snprintf(buf, sizeof(buf), "PC:%04X A:%02X X:%02X Y:%02X",
                  mock_pc, mock_a, mock_x, mock_y);
     rb->lcd_puts(0, 0, buf);
-    rb->lcd_puts(0, 1, "Apple I Simulator V0.1  (LEFT/RIGHT=move, PLAY=enter)");
+    rb->lcd_puts(0, 1, "Apple I V0.1  (LEFT/RIGHT=move, PLAY=enter)");
 }
 
 /* ============================================================
@@ -302,32 +176,32 @@ static void draw_ui(void)
 }
 
 /* ============================================================
-   Type a character
+   Type a character (with scrolling)
    ============================================================ */
 static void type_char(char ch)
 {
     if (ch == '\r') {
         cursor_x = 0;
-        if (cursor_y < ROWS - 1) {
+        if (cursor_y < rows - 1) {
             cursor_y++;
         } else {
-            for (int r = 1; r < ROWS; r++)
-                rb->memcpy(video[r-1], video[r], COLS);
-            rb->memset(video[ROWS-1], ' ', COLS);
+            for (int r = 1; r < rows; r++)
+                rb->memcpy(video[r-1], video[r], cols);
+            rb->memset(video[rows-1], ' ', cols);
         }
         return;
     }
     if (ch >= 32 && ch <= 95) {
         video[cursor_y][cursor_x] = ch;
         cursor_x++;
-        if (cursor_x >= COLS) {
+        if (cursor_x >= cols) {
             cursor_x = 0;
-            if (cursor_y < ROWS - 1)
+            if (cursor_y < rows - 1)
                 cursor_y++;
             else {
-                for (int r = 1; r < ROWS; r++)
-                    rb->memcpy(video[r-1], video[r], COLS);
-                rb->memset(video[ROWS-1], ' ', COLS);
+                for (int r = 1; r < rows; r++)
+                    rb->memcpy(video[r-1], video[r], cols);
+                rb->memset(video[rows-1], ' ', cols);
             }
         }
     }
@@ -341,14 +215,17 @@ enum plugin_status plugin_start(const void *parameter)
     (void)parameter;
     int btn;
 
-    /* Initialize video */
-    for (int r = 0; r < ROWS; r++) {
-        rb->memset(video[r], ' ', COLS);
-        video[r][COLS] = '\0';
+    init_font();
+
+    /* Clear video memory */
+    for (int r = 0; r < MAX_ROWS; r++) {
+        rb->memset(video[r], ' ', MAX_COLS);
+        video[r][MAX_COLS] = '\0';
     }
-    rb->strcpy(video[0], "  WELCOME TO APPLE I EMULATOR       ");
-    rb->strcpy(video[1], "  TYPE 'HELLO' AND PRESS ENTER     ");
-    rb->strcpy(video[2], "  TO SEE THE MAGIC!                ");
+    /* Set initial welcome text (within actual cols) */
+    rb->strcpy(video[0], "WELCOME TO APPLE I");
+    rb->strcpy(video[1], "TYPE HELLO");
+    rb->strcpy(video[2], "PRESS ENTER");
     cursor_x = 0;
     cursor_y = 2;
 
@@ -368,10 +245,10 @@ enum plugin_status plugin_start(const void *parameter)
             type_char(keyboard_chars[kb_index]);
         } else if (btn == BUTTON_LEFT) {
             if (cursor_x > 0) cursor_x--;
-            else if (cursor_y > 0) { cursor_y--; cursor_x = COLS - 1; }
+            else if (cursor_y > 0) { cursor_y--; cursor_x = cols - 1; }
         } else if (btn == BUTTON_RIGHT) {
-            if (cursor_x < COLS - 1) cursor_x++;
-            else if (cursor_y < ROWS - 1) { cursor_y++; cursor_x = 0; }
+            if (cursor_x < cols - 1) cursor_x++;
+            else if (cursor_y < rows - 1) { cursor_y++; cursor_x = 0; }
         }
     }
     return PLUGIN_OK;

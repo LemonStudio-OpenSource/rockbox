@@ -10,7 +10,7 @@ extern int g_log_counter;
 #define M6502_H
 
 #include <stdint.h>
-#include <stdbool.h>
+#include <stdio.h>
 
 /* Memory callbacks - must be set by user */
 extern uint8_t (*cpu_read)(uint16_t addr);
@@ -211,316 +211,308 @@ static void BRK() {
     pushstack(ret >> 8);
     pushstack(ret & 0xFF);
     pushstack(Status | 0b00110000);
-    Status |= 0b00000100;  /* SEI */
+    Status |= 0b00000100; /* SEI */
     programcounter = dbyte(0xFFFE);
 }
 static void NOP() { programcounter++; }
-static void JAM() { Status |= 0b00010000; }
+static void JAM() { Status |= 0b00010000; programcounter++; }
 
 /* LDA */
 static void LDA_a() {
-    regA = cpu_read(dbyte(programcounter + 1));
+    regA = cpu_read(dbyte(programcounter));
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void LDA_aX() {
-    regA = cpu_read(dbyte(programcounter + 1) + regX);
+    regA = cpu_read(dbyte(programcounter) + regX);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void LDA_aY() {
-    regA = cpu_read(dbyte(programcounter + 1) + regY);
+    regA = cpu_read(dbyte(programcounter) + regY);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void LDA_I() {
-    regA = cpu_read(programcounter + 1);
+    regA = cpu_read(programcounter);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDA_zpg() {
-    regA = cpu_read(cpu_read(programcounter + 1));
+    regA = cpu_read(cpu_read(programcounter));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDA_zpgX() {
-    regA = cpu_read(cpu_read(programcounter + 1) + regX);
+    regA = cpu_read(cpu_read(programcounter) + regX);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDA_ind_Y() {
-    regA = cpu_read(dbyte(cpu_read(programcounter + 1)) + regY);
+    regA = cpu_read(dbyte(cpu_read(programcounter)) + regY);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDA_X_ind() {
-    regA = cpu_read(dbyte(cpu_read(programcounter + 1) + regX));
+    regA = cpu_read(dbyte(cpu_read(programcounter) + regX));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* LDX */
 static void LDX_a() {
-    regX = cpu_read(dbyte(programcounter + 1));
+    regX = cpu_read(dbyte(programcounter));
     set_flags(regX);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void LDX_aY() {
-    regX = cpu_read(dbyte(programcounter + 1) + regY);
+    regX = cpu_read(dbyte(programcounter) + regY);
     set_flags(regX);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void LDX_I() {
-    regX = cpu_read(programcounter + 1);
+    regX = cpu_read(programcounter);
     set_flags(regX);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDX_zpg() {
-    regX = cpu_read(cpu_read(programcounter + 1));
+    regX = cpu_read(cpu_read(programcounter));
     set_flags(regX);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDX_zpgY() {
-    regX = cpu_read(cpu_read(programcounter + 1) + regY);
+    regX = cpu_read(cpu_read(programcounter) + regY);
     set_flags(regX);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* LDY */
 static void LDY_a() {
-    regY = cpu_read(dbyte(programcounter + 1));
+    regY = cpu_read(dbyte(programcounter));
     set_flags(regY);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void LDY_aX() {
-    regY = cpu_read(dbyte(programcounter + 1) + regX);
+    regY = cpu_read(dbyte(programcounter) + regX);
     set_flags(regY);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void LDY_I() {
-    regY = cpu_read(programcounter + 1);
+    regY = cpu_read(programcounter);
     set_flags(regY);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDY_zpg() {
-    regY = cpu_read(cpu_read(programcounter + 1));
+    regY = cpu_read(cpu_read(programcounter));
     set_flags(regY);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LDY_zpgX() {
-    regY = cpu_read(cpu_read(programcounter + 1) + regX);
+    regY = cpu_read(cpu_read(programcounter) + regX);
     set_flags(regY);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* STA */
 static void STA_a() {
-    cpu_write(dbyte(programcounter + 1), regA);
-    programcounter += 3;
+    cpu_write(dbyte(programcounter), regA);
+    programcounter += 2;
 }
 static void STA_aX() {
-    cpu_write(dbyte(programcounter + 1) + regX, regA);
-    programcounter += 3;
+    cpu_write(dbyte(programcounter) + regX, regA);
+    programcounter += 2;
 }
 static void STA_aY() {
-    cpu_write(dbyte(programcounter + 1) + regY, regA);
-    programcounter += 3;
+    cpu_write(dbyte(programcounter) + regY, regA);
+    programcounter += 2;
 }
 static void STA_zpg() {
-    cpu_write(cpu_read(programcounter + 1), regA);
-    programcounter += 2;
+    cpu_write(cpu_read(programcounter), regA);
+    programcounter += 1;
 }
 static void STA_zpgX() {
-    cpu_write(cpu_read(programcounter + 1) + regX, regA);
-    programcounter += 2;
+    cpu_write(cpu_read(programcounter) + regX, regA);
+    programcounter += 1;
 }
 static void STA_ind_Y() {
-    cpu_write(dbyte(cpu_read(programcounter + 1)) + regY, regA);
-    programcounter += 2;
+    cpu_write(dbyte(cpu_read(programcounter)) + regY, regA);
+    programcounter += 1;
 }
 static void STA_X_ind() {
-    cpu_write(dbyte(cpu_read(programcounter + 1) + regX), regA);
-    programcounter += 2;
+    cpu_write(dbyte(cpu_read(programcounter) + regX), regA);
+    programcounter += 1;
 }
 
 /* STX */
 static void STX_a() {
-    cpu_write(dbyte(programcounter + 1), regX);
-    programcounter += 3;
+    cpu_write(dbyte(programcounter), regX);
+    programcounter += 2;
 }
 static void STX_zpgY() {
-    cpu_write(cpu_read(programcounter + 1) + regY, regX);
-    programcounter += 2;
+    cpu_write(cpu_read(programcounter) + regY, regX);
+    programcounter += 1;
 }
 static void STX_zpg() {
-    cpu_write(cpu_read(programcounter + 1), regX);
-    programcounter += 2;
+    cpu_write(cpu_read(programcounter), regX);
+    programcounter += 1;
 }
 
 /* STY */
 static void STY_a() {
-    cpu_write(dbyte(programcounter + 1), regY);
-    programcounter += 3;
+    cpu_write(dbyte(programcounter), regY);
+    programcounter += 2;
 }
 static void STY_zpgX() {
-    cpu_write(cpu_read(programcounter + 1) + regX, regY);
-    programcounter += 2;
+    cpu_write(cpu_read(programcounter) + regX, regY);
+    programcounter += 1;
 }
 static void STY_zpg() {
-    cpu_write(cpu_read(programcounter + 1), regY);
-    programcounter += 2;
+    cpu_write(cpu_read(programcounter), regY);
+    programcounter += 1;
 }
 
 /* ADC */
 static void ADC_a() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter + 1));
+    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter));
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 3;
+    programcounter += 2;
 }
 static void ADC_aX() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter + 1) + regX);
+    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter) + regX);
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 3;
+    programcounter += 2;
 }
 static void ADC_aY() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter + 1) + regY);
+    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter) + regY);
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 3;
+    programcounter += 2;
 }
 static void ADC_I() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(programcounter + 1);
+    tempvalue = (Status & 1) + cpu_read(programcounter);
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ADC_zpg() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(cpu_read(programcounter + 1));
+    tempvalue = (Status & 1) + cpu_read(cpu_read(programcounter));
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ADC_zpgX() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(cpu_read(programcounter + 1) + regX);
+    tempvalue = (Status & 1) + cpu_read(cpu_read(programcounter) + regX);
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ADC_ind_Y() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter + 1)) + regY);
+    tempvalue = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter)) + regY);
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ADC_X_ind() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter + 1) + regX));
+    tempvalue = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter) + regX));
     result = regA + tempvalue;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* SBC - similar to ADC but with operand complemented */
-#define SBC_common(operand) \
-    uint16_t result; \
-    tempvalue = (Status & 1) + operand; \
-    tempvalue = (tempvalue ^ 0xFF) + 1; \
-    result = regA + tempvalue; \
-    Status &= ~0b11000011; \
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1)); \
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0); \
-    regA = result & 0xFF;
+#define SBC_common(operand)     uint16_t result;     tempvalue = (Status & 1) + operand;     tempvalue = (tempvalue ^ 0xFF) + 1;     result = regA + tempvalue;     Status &= ~0b11000011;     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);     regA = result & 0xFF;
 
 static void SBC_a() {
-    SBC_common(cpu_read(dbyte(programcounter + 1)));
-    programcounter += 3;
+    SBC_common(cpu_read(dbyte(programcounter)));
+    programcounter += 2;
 }
 static void SBC_aX() {
-    SBC_common(cpu_read(dbyte(programcounter + 1) + regX));
-    programcounter += 3;
+    SBC_common(cpu_read(dbyte(programcounter) + regX));
+    programcounter += 2;
 }
 static void SBC_aY() {
-    SBC_common(cpu_read(dbyte(programcounter + 1) + regY));
-    programcounter += 3;
+    SBC_common(cpu_read(dbyte(programcounter) + regY));
+    programcounter += 2;
 }
 static void SBC_I() {
-    SBC_common(cpu_read(programcounter + 1));
-    programcounter += 2;
+    SBC_common(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void SBC_zpg() {
-    SBC_common(cpu_read(cpu_read(programcounter + 1)));
-    programcounter += 2;
+    SBC_common(cpu_read(cpu_read(programcounter)));
+    programcounter += 1;
 }
 static void SBC_zpgX() {
-    SBC_common(cpu_read(cpu_read(programcounter + 1) + regX));
-    programcounter += 2;
+    SBC_common(cpu_read(cpu_read(programcounter) + regX));
+    programcounter += 1;
 }
 static void SBC_ind_Y() {
-    SBC_common(cpu_read(dbyte(cpu_read(programcounter + 1)) + regY));
-    programcounter += 2;
+    SBC_common(cpu_read(dbyte(cpu_read(programcounter)) + regY));
+    programcounter += 1;
 }
 static void SBC_X_ind() {
-    SBC_common(cpu_read(dbyte(cpu_read(programcounter + 1) + regX)));
-    programcounter += 2;
+    SBC_common(cpu_read(dbyte(cpu_read(programcounter) + regX)));
+    programcounter += 1;
 }
 
 /* INC */
 static void INC_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1)) + 1;
-    cpu_write(dbyte(programcounter + 1), val);
+    uint8_t val = cpu_read(dbyte(programcounter)) + 1;
+    cpu_write(dbyte(programcounter), val);
     set_flags(val);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void INC_aX() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regX) + 1;
-    cpu_write(dbyte(programcounter + 1) + regX, val);
+    uint8_t val = cpu_read(dbyte(programcounter) + regX) + 1;
+    cpu_write(dbyte(programcounter) + regX, val);
     set_flags(val);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void INC_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1)) + 1;
-    cpu_write(cpu_read(programcounter + 1), val);
+    uint8_t val = cpu_read(cpu_read(programcounter)) + 1;
+    cpu_write(cpu_read(programcounter), val);
     set_flags(val);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void INC_zpgX() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1) + regX) + 1;
-    cpu_write(cpu_read(programcounter + 1) + regX, val);
+    uint8_t val = cpu_read(cpu_read(programcounter) + regX) + 1;
+    cpu_write(cpu_read(programcounter) + regX, val);
     set_flags(val);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void INX() {
     regX++;
@@ -535,28 +527,28 @@ static void INY() {
 
 /* DEC */
 static void DEC_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1)) - 1;
-    cpu_write(dbyte(programcounter + 1), val);
+    uint8_t val = cpu_read(dbyte(programcounter)) - 1;
+    cpu_write(dbyte(programcounter), val);
     set_flags(val);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void DEC_aX() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regX) - 1;
-    cpu_write(dbyte(programcounter + 1) + regX, val);
+    uint8_t val = cpu_read(dbyte(programcounter) + regX) - 1;
+    cpu_write(dbyte(programcounter) + regX, val);
     set_flags(val);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void DEC_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1)) - 1;
-    cpu_write(cpu_read(programcounter + 1), val);
+    uint8_t val = cpu_read(cpu_read(programcounter)) - 1;
+    cpu_write(cpu_read(programcounter), val);
     set_flags(val);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void DEC_zpgX() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1) + regX) - 1;
-    cpu_write(cpu_read(programcounter + 1) + regX, val);
+    uint8_t val = cpu_read(cpu_read(programcounter) + regX) - 1;
+    cpu_write(cpu_read(programcounter) + regX, val);
     set_flags(val);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void DEX() {
     regX--;
@@ -571,12 +563,12 @@ static void DEY() {
 
 /* ASL */
 static void ASL_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
     val <<= 1;
-    cpu_write(cpu_read(programcounter + 1), val);
+    cpu_write(cpu_read(programcounter), val);
     set_flags(val);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ASL_A() {
     Status = (Status & ~0b10000011) | ((regA & 0x80) >> 7);
@@ -585,38 +577,38 @@ static void ASL_A() {
     programcounter++;
 }
 static void ASL_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
     val <<= 1;
-    cpu_write(dbyte(programcounter + 1), val);
-    set_flags(val);
-    programcounter += 3;
-}
-static void ASL_zpgX() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1) + regX);
-    Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
-    val <<= 1;
-    cpu_write(cpu_read(programcounter + 1) + regX, val);
+    cpu_write(dbyte(programcounter), val);
     set_flags(val);
     programcounter += 2;
 }
-static void ASL_aX() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regX);
+static void ASL_zpgX() {
+    uint8_t val = cpu_read(cpu_read(programcounter) + regX);
     Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
     val <<= 1;
-    cpu_write(dbyte(programcounter + 1) + regX, val);
+    cpu_write(cpu_read(programcounter) + regX, val);
     set_flags(val);
-    programcounter += 3;
+    programcounter += 1;
+}
+static void ASL_aX() {
+    uint8_t val = cpu_read(dbyte(programcounter) + regX);
+    Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
+    val <<= 1;
+    cpu_write(dbyte(programcounter) + regX, val);
+    set_flags(val);
+    programcounter += 2;
 }
 
 /* LSR */
 static void LSR_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     Status = (Status & ~0b10000011) | (val & 1);
     val >>= 1;
-    cpu_write(cpu_read(programcounter + 1), val);
+    cpu_write(cpu_read(programcounter), val);
     Status = (Status & ~0b00000010) | ((val == 0) << 1);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void LSR_A() {
     Status = (Status & ~0b10000011) | (regA & 1);
@@ -625,39 +617,39 @@ static void LSR_A() {
     programcounter++;
 }
 static void LSR_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     Status = (Status & ~0b10000011) | (val & 1);
     val >>= 1;
-    cpu_write(dbyte(programcounter + 1), val);
-    Status = (Status & ~0b00000010) | ((val == 0) << 1);
-    programcounter += 3;
-}
-static void LSR_zpgX() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1) + regX);
-    Status = (Status & ~0b10000011) | (val & 1);
-    val >>= 1;
-    cpu_write(cpu_read(programcounter + 1) + regX, val);
+    cpu_write(dbyte(programcounter), val);
     Status = (Status & ~0b00000010) | ((val == 0) << 1);
     programcounter += 2;
 }
-static void LSR_aX() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regX);
+static void LSR_zpgX() {
+    uint8_t val = cpu_read(cpu_read(programcounter) + regX);
     Status = (Status & ~0b10000011) | (val & 1);
     val >>= 1;
-    cpu_write(dbyte(programcounter + 1) + regX, val);
+    cpu_write(cpu_read(programcounter) + regX, val);
     Status = (Status & ~0b00000010) | ((val == 0) << 1);
-    programcounter += 3;
+    programcounter += 1;
+}
+static void LSR_aX() {
+    uint8_t val = cpu_read(dbyte(programcounter) + regX);
+    Status = (Status & ~0b10000011) | (val & 1);
+    val >>= 1;
+    cpu_write(dbyte(programcounter) + regX, val);
+    Status = (Status & ~0b00000010) | ((val == 0) << 1);
+    programcounter += 2;
 }
 
 /* ROL */
 static void ROL_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     uint8_t carry = (Status & 1);
     Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
     val = (val << 1) | carry;
-    cpu_write(cpu_read(programcounter + 1), val);
+    cpu_write(cpu_read(programcounter), val);
     set_flags(val);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ROL_A() {
     uint8_t carry = (Status & 1);
@@ -667,42 +659,42 @@ static void ROL_A() {
     programcounter++;
 }
 static void ROL_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     uint8_t carry = (Status & 1);
     Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
     val = (val << 1) | carry;
-    cpu_write(dbyte(programcounter + 1), val);
-    set_flags(val);
-    programcounter += 3;
-}
-static void ROL_zpgX() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1) + regX);
-    uint8_t carry = (Status & 1);
-    Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
-    val = (val << 1) | carry;
-    cpu_write(cpu_read(programcounter + 1) + regX, val);
+    cpu_write(dbyte(programcounter), val);
     set_flags(val);
     programcounter += 2;
 }
-static void ROL_aX() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regX);
+static void ROL_zpgX() {
+    uint8_t val = cpu_read(cpu_read(programcounter) + regX);
     uint8_t carry = (Status & 1);
     Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
     val = (val << 1) | carry;
-    cpu_write(dbyte(programcounter + 1) + regX, val);
+    cpu_write(cpu_read(programcounter) + regX, val);
     set_flags(val);
-    programcounter += 3;
+    programcounter += 1;
+}
+static void ROL_aX() {
+    uint8_t val = cpu_read(dbyte(programcounter) + regX);
+    uint8_t carry = (Status & 1);
+    Status = (Status & ~0b10000011) | ((val & 0x80) >> 7);
+    val = (val << 1) | carry;
+    cpu_write(dbyte(programcounter) + regX, val);
+    set_flags(val);
+    programcounter += 2;
 }
 
 /* ROR */
 static void ROR_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     uint8_t carry = (Status & 1);
     Status = (Status & ~1) | (val & 1);
     val = (val >> 1) | (carry << 7);
-    cpu_write(cpu_read(programcounter + 1), val);
+    cpu_write(cpu_read(programcounter), val);
     set_flags(val);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ROR_A() {
     uint8_t carry = (Status & 1);
@@ -712,284 +704,284 @@ static void ROR_A() {
     programcounter++;
 }
 static void ROR_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     uint8_t carry = (Status & 1);
     Status = (Status & ~1) | (val & 1);
     val = (val >> 1) | (carry << 7);
-    cpu_write(dbyte(programcounter + 1), val);
-    set_flags(val);
-    programcounter += 3;
-}
-static void ROR_zpgX() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1) + regX);
-    uint8_t carry = (Status & 1);
-    Status = (Status & ~1) | (val & 1);
-    val = (val >> 1) | (carry << 7);
-    cpu_write(cpu_read(programcounter + 1) + regX, val);
+    cpu_write(dbyte(programcounter), val);
     set_flags(val);
     programcounter += 2;
 }
-static void ROR_aX() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regX);
+static void ROR_zpgX() {
+    uint8_t val = cpu_read(cpu_read(programcounter) + regX);
     uint8_t carry = (Status & 1);
     Status = (Status & ~1) | (val & 1);
     val = (val >> 1) | (carry << 7);
-    cpu_write(dbyte(programcounter + 1) + regX, val);
+    cpu_write(cpu_read(programcounter) + regX, val);
     set_flags(val);
-    programcounter += 3;
+    programcounter += 1;
+}
+static void ROR_aX() {
+    uint8_t val = cpu_read(dbyte(programcounter) + regX);
+    uint8_t carry = (Status & 1);
+    Status = (Status & ~1) | (val & 1);
+    val = (val >> 1) | (carry << 7);
+    cpu_write(dbyte(programcounter) + regX, val);
+    set_flags(val);
+    programcounter += 2;
 }
 
 /* AND */
 static void AND_a() {
-    regA &= cpu_read(dbyte(programcounter + 1));
+    regA &= cpu_read(dbyte(programcounter));
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void AND_aX() {
-    regA &= cpu_read(dbyte(programcounter + 1) + regX);
+    regA &= cpu_read(dbyte(programcounter) + regX);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void AND_aY() {
-    regA &= cpu_read(dbyte(programcounter + 1) + regY);
+    regA &= cpu_read(dbyte(programcounter) + regY);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void AND_I() {
-    regA &= cpu_read(programcounter + 1);
+    regA &= cpu_read(programcounter);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void AND_zpg() {
-    regA &= cpu_read(cpu_read(programcounter + 1));
+    regA &= cpu_read(cpu_read(programcounter));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void AND_zpgX() {
-    regA &= cpu_read(cpu_read(programcounter + 1) + regX);
+    regA &= cpu_read(cpu_read(programcounter) + regX);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void AND_ind_Y() {
-    regA &= cpu_read(dbyte(cpu_read(programcounter + 1)) + regY);
+    regA &= cpu_read(dbyte(cpu_read(programcounter)) + regY);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void AND_X_ind() {
-    regA &= cpu_read(dbyte(cpu_read(programcounter + 1) + regX));
+    regA &= cpu_read(dbyte(cpu_read(programcounter) + regX));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* ORA */
 static void ORA_a() {
-    regA |= cpu_read(dbyte(programcounter + 1));
+    regA |= cpu_read(dbyte(programcounter));
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void ORA_aX() {
-    regA |= cpu_read(dbyte(programcounter + 1) + regX);
+    regA |= cpu_read(dbyte(programcounter) + regX);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void ORA_aY() {
-    regA |= cpu_read(dbyte(programcounter + 1) + regY);
+    regA |= cpu_read(dbyte(programcounter) + regY);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void ORA_I() {
-    regA |= cpu_read(programcounter + 1);
+    regA |= cpu_read(programcounter);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ORA_zpg() {
-    regA |= cpu_read(cpu_read(programcounter + 1));
+    regA |= cpu_read(cpu_read(programcounter));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ORA_zpgX() {
-    regA |= cpu_read(cpu_read(programcounter + 1) + regX);
+    regA |= cpu_read(cpu_read(programcounter) + regX);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ORA_ind_Y() {
-    regA |= cpu_read(dbyte(cpu_read(programcounter + 1)) + regY);
+    regA |= cpu_read(dbyte(cpu_read(programcounter)) + regY);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void ORA_X_ind() {
-    regA |= cpu_read(dbyte(cpu_read(programcounter + 1) + regX));
+    regA |= cpu_read(dbyte(cpu_read(programcounter) + regX));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* EOR */
 static void EOR_a() {
-    regA ^= cpu_read(dbyte(programcounter + 1));
+    regA ^= cpu_read(dbyte(programcounter));
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void EOR_aX() {
-    regA ^= cpu_read(dbyte(programcounter + 1) + regX);
+    regA ^= cpu_read(dbyte(programcounter) + regX);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void EOR_aY() {
-    regA ^= cpu_read(dbyte(programcounter + 1) + regY);
+    regA ^= cpu_read(dbyte(programcounter) + regY);
     set_flags(regA);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void EOR_I() {
-    regA ^= cpu_read(programcounter + 1);
+    regA ^= cpu_read(programcounter);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void EOR_zpg() {
-    regA ^= cpu_read(cpu_read(programcounter + 1));
+    regA ^= cpu_read(cpu_read(programcounter));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void EOR_zpgX() {
-    regA ^= cpu_read(cpu_read(programcounter + 1) + regX);
+    regA ^= cpu_read(cpu_read(programcounter) + regX);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void EOR_ind_Y() {
-    regA ^= cpu_read(dbyte(cpu_read(programcounter + 1)) + regY);
+    regA ^= cpu_read(dbyte(cpu_read(programcounter)) + regY);
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void EOR_X_ind() {
-    regA ^= cpu_read(dbyte(cpu_read(programcounter + 1) + regX));
+    regA ^= cpu_read(dbyte(cpu_read(programcounter) + regX));
     set_flags(regA);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* CMP */
 static void CMP_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void CMP_aX() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regX);
+    uint8_t val = cpu_read(dbyte(programcounter) + regX);
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void CMP_aY() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1) + regY);
+    uint8_t val = cpu_read(dbyte(programcounter) + regY);
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void CMP_I() {
-    uint8_t val = cpu_read(programcounter + 1);
+    uint8_t val = cpu_read(programcounter);
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void CMP_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void CMP_zpgX() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1) + regX);
+    uint8_t val = cpu_read(cpu_read(programcounter) + regX);
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void CMP_ind_Y() {
-    uint8_t val = cpu_read(dbyte(cpu_read(programcounter + 1)) + regY);
+    uint8_t val = cpu_read(dbyte(cpu_read(programcounter)) + regY);
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void CMP_X_ind() {
-    uint8_t val = cpu_read(dbyte(cpu_read(programcounter + 1) + regX));
+    uint8_t val = cpu_read(dbyte(cpu_read(programcounter) + regX));
     Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* CPX */
 static void CPX_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((regX < val) << 7);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void CPX_I() {
-    uint8_t val = cpu_read(programcounter + 1);
+    uint8_t val = cpu_read(programcounter);
     Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((regX < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void CPX_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((regX < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* CPY */
 static void CPY_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((regY < val) << 7);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void CPY_I() {
-    uint8_t val = cpu_read(programcounter + 1);
+    uint8_t val = cpu_read(programcounter);
     Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((regY < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void CPY_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((regY < val) << 7);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* BIT */
 static void BIT_a() {
-    uint8_t val = cpu_read(dbyte(programcounter + 1));
+    uint8_t val = cpu_read(dbyte(programcounter));
     Status = (Status & ~0b11000010) | (val & 0b11000000) | (((val & regA) == 0) << 1);
-    programcounter += 3;
+    programcounter += 2;
 }
 static void BIT_I() {
-    uint8_t val = cpu_read(programcounter + 1);
+    uint8_t val = cpu_read(programcounter);
     Status = (Status & ~0b11000010) | (val & 0b11000000) | (((val & regA) == 0) << 1);
-    programcounter += 2;
+    programcounter += 1;
 }
 static void BIT_zpg() {
-    uint8_t val = cpu_read(cpu_read(programcounter + 1));
+    uint8_t val = cpu_read(cpu_read(programcounter));
     Status = (Status & ~0b11000010) | (val & 0b11000000) | (((val & regA) == 0) << 1);
-    programcounter += 2;
+    programcounter += 1;
 }
 
 /* Branches */
 static void BCC() {
-    if (!(Status & 1)) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (!(Status & 1)) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void BCS() {
-    if (Status & 1) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (Status & 1) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void BNE() {
-    if (!(Status & 2)) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (!(Status & 2)) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void BEQ() {
-    if (Status & 2) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (Status & 2) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void BPL() {
-    if (!(Status & 0x80)) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (!(Status & 0x80)) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void BMI() {
-    if (Status & 0x80) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (Status & 0x80) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void BVC() {
-    if (!(Status & 0x40)) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (!(Status & 0x40)) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 static void BVS() {
-    if (Status & 0x40) programcounter += calcrelative(cpu_read(programcounter + 1));
-    programcounter += 2;
+    if (Status & 0x40) programcounter += calcrelative(cpu_read(programcounter));
+    programcounter += 1;
 }
 
 /* Transfers */
@@ -1044,7 +1036,7 @@ static void PLP() {
 
 /* JMP */
 static void JMP_a_ind() {
-    uint16_t addr = dbyte(programcounter + 1);
+    uint16_t addr = dbyte(programcounter);
     if ((addr & 0xFF) == 0xFF) {
         addr = (addr & 0xFF00) | cpu_read(addr & 0xFF00);
     } else {
@@ -1053,7 +1045,7 @@ static void JMP_a_ind() {
     programcounter = addr;
 }
 static void JMP_a() {
-    programcounter = dbyte(programcounter + 1);
+    programcounter = dbyte(programcounter);
 }
 
 /* JSR / RTS / RTI */
@@ -1061,7 +1053,7 @@ static void JSR() {
     uint16_t ret = programcounter + 2;
     pushstack(ret >> 8);
     pushstack(ret & 0xFF);
-    programcounter = dbyte(programcounter + 1);
+    programcounter = dbyte(programcounter);
 }
 static void RTS() {
     programcounter = pullstack();
@@ -1075,13 +1067,13 @@ static void RTI() {
 }
 
 /* Flag ops */
-static void CLC() { Status &= ~1; }
-static void SEC() { Status |= 1; }
-static void CLD() { Status &= ~0b00001000; }
-static void SED() { Status |= 0b00001000; }
-static void CLI() { Status &= ~0b00000100; }
-static void SEI() { Status |= 0b00000100; }
-static void CLV() { Status &= ~0b01000000; }
+static void CLC() { Status &= ~1; programcounter++; }
+static void SEC() { Status |= 1; programcounter++; }
+static void CLD() { Status &= ~0b00001000; programcounter++; }
+static void SED() { Status |= 0b00001000; programcounter++; }
+static void CLI() { Status &= ~0b00000100; programcounter++; }
+static void SEI() { Status |= 0b00000100; programcounter++; }
+static void CLV() { Status &= ~0b01000000; programcounter++; }
 
 /* Instruction decode table */
 static void (*instructionArr[])(void) = {

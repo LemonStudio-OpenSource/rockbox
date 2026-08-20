@@ -1,115 +1,88 @@
 #include <stdint.h>
 #include "plugin.h"
+#include "6502.h"          /* our modified 6502 core */
 
 /*
- * Apple I Emulator V0.1 - Terminal UI (Explicit 10-Fixed Font)
- * Loads /.rockbox/fonts/10-Fixed.fnt
- * Keyboard chars split into two rows.
+ * Apple I Emulator with 6502 CPU, display mapping, keyboard input.
+ * Loads ROM from /.rockbox/apple1basic.bin
  */
 
 /* ============================================================
-   Screen dimensions
+   Screen & colors
    ============================================================ */
 #define SCREEN_W 220
 #define SCREEN_H 176
 
-/* ============================================================
-   Colors (RGB565) - USER CAN CHANGE HERE
-   ============================================================ */
-#define COLOR_BG      0x0000    /* Background: black */
-#define COLOR_TEXT    0x67E0    /* Text color: green (change to e.g. 0xFFFF for white) */
-#define COLOR_CURSOR  0xFFFF    /* Cursor underline: white */
-#define COLOR_LABEL   0x8410    /* Label "KB:": gray */
-#define COLOR_HIGHLIGHT_BG 0xFFFF /* Highlight background: white */
+#define COLOR_BG      0x0000
+#define COLOR_TEXT    0x07E0
+#define COLOR_CURSOR  0xFFFF
+#define COLOR_LABEL   0x8410
+#define COLOR_HIGHLIGHT_BG 0xFFFF
 
 /* ============================================================
-   Video memory
+   Memory and video
    ============================================================ */
 #define MAX_COLS 40
 #define MAX_ROWS 24
+
+static uint8_t mem[65536];           /* 64KB address space */
 static char video[MAX_ROWS][MAX_COLS + 1];
+static int cols, rows;
+static int cursor_x = 0, cursor_y = 0;
+static bool cpu_halted = false;
 
-static int cols = 0;
-static int rows = 0;
-static int cursor_x = 0;
-static int cursor_y = 0;
-
-static uint16_t mock_pc = 0x0100;
-static uint8_t  mock_a  = 0x00;
-static uint8_t  mock_x  = 0x00;
-static uint8_t  mock_y  = 0x00;
-
-/* ============================================================
-   Keyboard character set (split into two rows)
-   ============================================================ */
+/* UI state */
+static struct font *fixed_font = NULL;
+static int char_w = 0, char_h = 0;
 static const char *keyboard_chars_row1 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const char *keyboard_chars_row2 = "0123456789 .:-+* /=();,";
-static int kb_index = 0; /* global index into combined string */
-static int kb_total_len = 0;
+static int kb_index = 0, kb_total_len = 0;
 
-/* Font handle and dimensions */
-static struct font *fixed_font = NULL;
-static int char_w = 0;
-static int char_h = 0;
+/* Keyboard input for CPU */
+static uint8_t key_ready = 0;        /* non-zero if a key is waiting */
+static uint8_t key_value = 0;        /* ASCII code of key */
 
-/* Terminal geometry constants */
+/* ============================================================
+   Font loading & UI constants
+   ============================================================ */
 static const int TOP_OFFSET = 14;
 static const int BOTTOM_MARGIN = 4;
 static const int LEFT_OFFSET = 0;
 
-/* ============================================================
-   Explicitly load 10-Fixed font
-   ============================================================ */
-static bool init_font(void)
-{
+static bool init_font(void) {
     fixed_font = rb->font_load("/.rockbox/fonts/10-Fixed.fnt");
     if (!fixed_font) {
         rb->splash(HZ*2, "Failed to load 10-Fixed.fnt");
         return false;
     }
-
     rb->lcd_setfont(fixed_font);
-
     int w, h;
     rb->lcd_getstringsize("M", &w, &h);
     char_w = w;
     char_h = h;
-
     if (char_w <= 0 || char_h <= 0) {
-        char_w = 6;
-        char_h = 10;
+        char_w = 6; char_h = 10;
     }
-
-    /* Compute terminal size */
     cols = (SCREEN_W - LEFT_OFFSET) / char_w;
     if (cols > MAX_COLS) cols = MAX_COLS;
     if (cols < 10) cols = 10;
-
     rows = (SCREEN_H - TOP_OFFSET - BOTTOM_MARGIN) / char_h;
     if (rows > MAX_ROWS) rows = MAX_ROWS;
     if (rows < 4) rows = 4;
-
     kb_total_len = rb->strlen(keyboard_chars_row1) + rb->strlen(keyboard_chars_row2);
     return true;
 }
 
-/* ============================================================
-   Get character at global index
-   ============================================================ */
-static char get_kb_char(int idx)
-{
+static char get_kb_char(int idx) {
     int len1 = rb->strlen(keyboard_chars_row1);
-    if (idx < len1)
-        return keyboard_chars_row1[idx];
-    else
-        return keyboard_chars_row2[idx - len1];
+    if (idx < len1) return keyboard_chars_row1[idx];
+    else return keyboard_chars_row2[idx - len1];
 }
 
 /* ============================================================
-   Draw a character using loaded font
+   Drawing functions
    ============================================================ */
-static void draw_char_at(int px, int py, char ch, uint16_t color)
-{
+static void draw_char_at(int px, int py, char ch, uint16_t color) {
     if (ch == ' ') return;
     char str[2] = {ch, 0};
     rb->lcd_set_foreground(color);
@@ -117,17 +90,11 @@ static void draw_char_at(int px, int py, char ch, uint16_t color)
     rb->lcd_putsxy(px, py, str);
 }
 
-/* ============================================================
-   Render terminal
-   ============================================================ */
-static void render_terminal(void)
-{
+static void render_terminal(void) {
     int px = LEFT_OFFSET;
     int py = TOP_OFFSET;
-
     rb->lcd_set_foreground(COLOR_BG);
     rb->lcd_fillrect(px, py, cols * char_w, rows * char_h);
-
     for (int row = 0; row < rows; row++) {
         for (int col = 0; col < cols; col++) {
             char ch = video[row][col];
@@ -137,7 +104,6 @@ static void render_terminal(void)
             draw_char_at(x, y, ch, COLOR_TEXT);
         }
     }
-
     if (cursor_x < cols && cursor_y < rows) {
         int cx = px + cursor_x * char_w;
         int cy = py + cursor_y * char_h + char_h - 2;
@@ -146,14 +112,10 @@ static void render_terminal(void)
     }
 }
 
-/* ============================================================
-   Render keyboard selector (two rows)
-   ============================================================ */
-static void render_keyboard(void)
-{
+static void render_keyboard(void) {
     int y_base = TOP_OFFSET + rows * char_h + 2;
     int y = y_base;
-    int char_spacing = char_w + 2; /* small gap */
+    int char_spacing = char_w + 2;
     int len1 = rb->strlen(keyboard_chars_row1);
     int len2 = rb->strlen(keyboard_chars_row2);
 
@@ -170,7 +132,6 @@ static void render_keyboard(void)
             draw_char_at(px, y, ch, COLOR_TEXT);
         }
     }
-
     /* Row 2 */
     y += char_h + 2;
     x_start = (SCREEN_W - len2 * char_spacing) / 2;
@@ -186,32 +147,22 @@ static void render_keyboard(void)
             draw_char_at(px, y, ch, COLOR_TEXT);
         }
     }
-
-    /* Label "KB:" positioned above the rows */
     rb->lcd_set_foreground(COLOR_LABEL);
     rb->lcd_setfont(fixed_font);
     rb->lcd_puts(0, 7, "KB: ");
 }
 
-/* ============================================================
-   Status bar
-   ============================================================ */
-static void render_status(void)
-{
+static void render_status(void) {
     char buf[64];
     rb->lcd_set_foreground(COLOR_TEXT);
     rb->lcd_setfont(fixed_font);
-    rb->snprintf(buf, sizeof(buf), "PC:%04X A:%02X X:%02X Y:%02X",
-                 mock_pc, mock_a, mock_x, mock_y);
+    rb->snprintf(buf, sizeof(buf), "PC:%04X A:%02X X:%02X Y:%02X%s",
+                 programcounter, regA, regX, regY, cpu_halted ? " HLT" : "");
     rb->lcd_puts(0, 0, buf);
-    rb->lcd_puts(0, 1, "Apple I V0.1  (LEFT/RIGHT=move, PLAY=enter)");
+    rb->lcd_puts(0, 1, "Apple I (PLAY=enter)");
 }
 
-/* ============================================================
-   Draw everything
-   ============================================================ */
-static void draw_ui(void)
-{
+static void draw_ui(void) {
     rb->lcd_clear_display();
     rb->lcd_set_background(COLOR_BG);
     render_status();
@@ -221,28 +172,25 @@ static void draw_ui(void)
 }
 
 /* ============================================================
-   Type a character (with scrolling)
+   Type a character into video memory (used by CPU output)
    ============================================================ */
-static void type_char(char ch)
-{
+static void video_type_char(char ch) {
     if (ch == '\r') {
         cursor_x = 0;
-        if (cursor_y < rows - 1) {
-            cursor_y++;
-        } else {
+        if (cursor_y < rows - 1) cursor_y++;
+        else {
             for (int r = 1; r < rows; r++)
                 rb->memcpy(video[r-1], video[r], cols);
             rb->memset(video[rows-1], ' ', cols);
         }
         return;
     }
-    if (ch >= 32 && ch <= 95) {
+    if (ch >= 32 && ch <= 126) {
         video[cursor_y][cursor_x] = ch;
         cursor_x++;
         if (cursor_x >= cols) {
             cursor_x = 0;
-            if (cursor_y < rows - 1)
-                cursor_y++;
+            if (cursor_y < rows - 1) cursor_y++;
             else {
                 for (int r = 1; r < rows; r++)
                     rb->memcpy(video[r-1], video[r], cols);
@@ -253,49 +201,129 @@ static void type_char(char ch)
 }
 
 /* ============================================================
+   CPU memory read/write callbacks (defined by 6502.h)
+   ============================================================ */
+uint8_t (*cpu_read)(uint16_t addr) = NULL;
+void (*cpu_write)(uint16_t addr, uint8_t val) = NULL;
+
+static uint8_t mem_read(uint16_t addr) {
+    if (addr == 0xD010) {           /* keyboard input */
+        if (key_ready) {
+            key_ready = 0;
+            return key_value;
+        }
+        return 0;                   /* no key */
+    }
+    if (addr == 0xD011) {           /* display output? not used, we use write hook */
+        /* ignore */
+    }
+    return mem[addr];
+}
+
+static void mem_write(uint16_t addr, uint8_t val) {
+    if (addr >= 0x0200 && addr <= 0x03FF) {
+        /* Display memory – update video */
+        int offset = addr - 0x0200;
+        int row = offset / cols;
+        int col = offset % cols;
+        if (row < rows && col < cols) {
+            char ch = val;
+            if (ch < 32) ch = ' ';
+            video[row][col] = ch;
+        }
+        /* also update cursor position? not needed */
+    }
+    if (addr == 0xD011) {            /* output character? (some software uses this) */
+        video_type_char((char)val);
+    }
+    mem[addr] = val;
+}
+
+/* ============================================================
+   Load ROM
+   ============================================================ */
+static bool load_rom(void) {
+    int fd = rb->open("/apple1basic.bin", O_RDONLY);
+    if (fd < 0) {
+        rb->splash(HZ*2, "ROM not found: /apple1basic.bin");
+        return false;
+    }
+    size_t size = rb->filesize(fd);
+    if (size > 0x2000) size = 0x2000; /* max 8KB */
+    rb->read(fd, mem + 0xE000, size);
+    rb->close(fd);
+    return true;
+}
+
+/* ============================================================
    Plugin entry
    ============================================================ */
-enum plugin_status plugin_start(const void *parameter)
-{
+enum plugin_status plugin_start(const void *parameter) {
     (void)parameter;
     int btn;
 
-    if (!init_font()) {
+    /* Init font & UI */
+    if (!init_font()) return PLUGIN_ERROR;
+
+    /* Set memory callbacks */
+    cpu_read = mem_read;
+    cpu_write = mem_write;
+
+    /* Load ROM */
+    if (!load_rom()) {
+        rb->splash(HZ*2, "Failed to load ROM");
         return PLUGIN_ERROR;
     }
 
+    /* Clear video memory */
     for (int r = 0; r < MAX_ROWS; r++) {
         rb->memset(video[r], ' ', MAX_COLS);
         video[r][MAX_COLS] = '\0';
     }
-    rb->strcpy(video[0], "WELCOME TO APPLE I");
-    rb->strcpy(video[1], "TYPE HELLO");
-    rb->strcpy(video[2], "PRESS ENTER");
-    cursor_x = 0;
-    cursor_y = 2;
+    cursor_x = 0; cursor_y = 0;
 
+    /* Reset CPU (reads reset vector) */
+    m6502_reset();
+    cpu_halted = false;
+
+    /* Main loop: run CPU and handle UI */
+    int inst_count = 0;
     while (1) {
-        draw_ui();
-        btn = rb->button_get(true);
+        /* Execute CPU instructions in bursts */
+        for (int i = 0; i < 500; i++) {
+            if (!m6502_step()) {
+                cpu_halted = true;
+                break;
+            }
+        }
 
+        /* Check for quit */
+        btn = rb->button_get(false);
         if (btn == BUTTON_MENU) break;
-        else if (btn == BUTTON_PLAY) type_char('\r');
-        else if (btn == BUTTON_SCROLL_FWD || btn == BUTTON_SCROLL_FWD) {
+
+        /* Handle UI input */
+        if (btn == BUTTON_PLAY) {
+            /* Enter key – feed to CPU as keyboard input */
+            key_ready = 1;
+            key_value = '\r';
+        } else if (btn == BUTTON_SCROLL_FWD) {
             kb_index++;
             if (kb_index >= kb_total_len) kb_index = 0;
-        } else if (btn == BUTTON_SCROLL_BACK || btn == BUTTON_SCROLL_BACK) {
+        } else if (btn == BUTTON_SCROLL_BACK) {
             kb_index--;
             if (kb_index < 0) kb_index = kb_total_len - 1;
         } else if (btn == BUTTON_SELECT) {
             char ch = get_kb_char(kb_index);
-            type_char(ch);
-        } else if (btn == BUTTON_LEFT) {
-            if (cursor_x > 0) cursor_x--;
-            else if (cursor_y > 0) { cursor_y--; cursor_x = cols - 1; }
-        } else if (btn == BUTTON_RIGHT) {
-            if (cursor_x < cols - 1) cursor_x++;
-            else if (cursor_y < rows - 1) { cursor_y++; cursor_x = 0; }
+            key_ready = 1;
+            key_value = (uint8_t)ch;
         }
+
+        /* Refresh display */
+        draw_ui();
+
+        /* Small yield to avoid hogging CPU */
+        rb->yield();
     }
+
     return PLUGIN_OK;
 }

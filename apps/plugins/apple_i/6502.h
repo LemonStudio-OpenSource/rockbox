@@ -3,6 +3,10 @@
  */
 
 #ifndef M6502_H
+extern int g_log_counter;
+#ifndef MAX_LOG_COUNT
+#define MAX_LOG_COUNT 5000
+#endif
 #define M6502_H
 
 #include <stdint.h>
@@ -1141,13 +1145,22 @@ void m6502_reset(void) {
 }
 
 int m6502_step(void) {
-    uint8_t opcode = cpu_read(programcounter++);
+    uint8_t opcode = cpu_read(programcounter);
+    if (g_log_counter < MAX_LOG_COUNT) {
+        LOG("STEP PC=%04X OPC=%02X A=%02X X=%02X Y=%02X SP=%02X S=%02X",
+            programcounter, opcode, regA, regX, regY, StackPointer, Status);
+        g_log_counter++;
+    }
+    programcounter++;
     void (*func)(void) = instructionArr[opcode];
     if (func) {
         func();
         return 1;
     }
-    return 0;  /* 只有非法操作码才停机 */
+    if (g_log_counter < MAX_LOG_COUNT) {
+        LOG("!!! ILLEGAL OPCODE %02X at PC=%04X !!!", opcode, programcounter - 1);
+        g_log_counter++;
+    }
+    return 0;
 }
-
 #endif /* M6502_H */

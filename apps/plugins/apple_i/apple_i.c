@@ -1,5 +1,8 @@
+#include <stdint.h>
+#include "plugin.h"
+
 /*
- * Apple I Emulator V0.1 - Terminal UI Preview
+ * Apple I Emulator V0.1 - Terminal UI Preview (FIXED)
  * Key mappings:
  *   Scroll Wheel   : Select character
  *   SELECT         : Input selected character (overwrites current cursor pos)
@@ -8,14 +11,7 @@
  *   MENU           : Exit
  *
  * Character set: A-Z, 0-9, space, .:-+* / = ( ) ; ,
- * All characters are ASCII 32~95, perfect for Apple I terminal.
- *
- * Note: Font data uses standard 5 by 7 dot matrix (ASCII 32~95), verified.
- * License: This file is for Rockbox plugin development only, GPL v2.
  */
-
-#include "plugin.h"
-#include <stdint.h>
 
 /* ============================================================
    Screen dimensions
@@ -27,23 +23,22 @@
    Terminal parameters (5x7 dot matrix)
    ============================================================ */
 #define COLS 40
-#define ROWS 24
+#define ROWS 22               /* 22 rows to fit in 176px (top status takes 16px) */
 #define CHAR_W 5
 #define CHAR_H 7
-#define TERM_X_OFFSET ((SCREEN_W - (COLS * CHAR_W)) / 2)
-#define TERM_Y_OFFSET 16
+#define TERM_X_OFFSET ((SCREEN_W - (COLS * CHAR_W)) / 2)  /* 10 */
+#define TERM_Y_OFFSET 16      /* status bar height */
 
 /* ============================================================
    Color definitions (RGB565)
    ============================================================ */
 #define COLOR_BG      0x0000    /* Black */
-#define COLOR_TEXT    0x00FF    /* Green (Apple I classic) */
+#define COLOR_TEXT    0x07E0    /* Green (Apple I classic) */
 #define COLOR_CURSOR  0xFFFF    /* White */
-#define COLOR_LABEL   0x8888    /* Gray */
+#define COLOR_LABEL   0x8410    /* Gray */
 
 /* ============================================================
    Standard 5x7 dot matrix font (ASCII 32~95)
-   Data source: Adafruit GFX library and widely verified.
    ============================================================ */
 static const unsigned char font5x7[][5] = {
     /* 32 space */ {0x00, 0x00, 0x00, 0x00, 0x00},
@@ -113,7 +108,7 @@ static const unsigned char font5x7[][5] = {
 };
 
 /* ============================================================
-   Virtual terminal video memory (40x24)
+   Virtual terminal video memory (40x22)
    ============================================================ */
 static char video[ROWS][COLS + 1];
 static int cursor_x = 0;
@@ -189,7 +184,7 @@ static void render_terminal(void)
    ============================================================ */
 static void render_keyboard(void)
 {
-    int y = TERM_Y_OFFSET + ROWS * CHAR_H + 4;
+    int y = TERM_Y_OFFSET + ROWS * CHAR_H + 2;  /* 2px gap */
     rb->lcd_set_foreground(COLOR_LABEL);
     rb->lcd_setfont(FONT_UI);
     rb->lcd_puts(0, 7, "KB: ");
@@ -239,16 +234,20 @@ static void draw_ui(void)
     render_terminal();
     render_keyboard();
 
+    /* Debug: show a system font string at bottom to verify screen works */
+    rb->lcd_set_foreground(COLOR_CURSOR);
+    rb->lcd_setfont(FONT_UI);
+    rb->lcd_puts(0, 5, "TEST");   /* will appear if screen works */
+
     rb->lcd_update();
 }
 
 /* ============================================================
-   Type a character into the terminal (simulate keyboard input)
+   Type a character into the terminal
    ============================================================ */
 static void type_char(char ch)
 {
     if (ch == '\r') {
-        /* Carriage return */
         cursor_x = 0;
         if (cursor_y < ROWS - 1) {
             cursor_y++;
@@ -262,7 +261,6 @@ static void type_char(char ch)
     }
 
     if (ch >= 32 && ch <= 95) {
-        /* Overwrite current cursor position */
         video[cursor_y][cursor_x] = ch;
         cursor_x++;
         if (cursor_x >= COLS) {
@@ -292,7 +290,6 @@ enum plugin_status plugin_start(const void *parameter)
         rb->memset(video[r], ' ', COLS);
         video[r][COLS] = '\0';
     }
-    /* Welcome text */
     rb->strcpy(video[0], "  WELCOME TO APPLE I EMULATOR       ");
     rb->strcpy(video[1], "  TYPE 'HELLO' AND PRESS ENTER     ");
     rb->strcpy(video[2], "  TO SEE THE MAGIC!                ");

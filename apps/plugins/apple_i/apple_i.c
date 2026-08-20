@@ -3,7 +3,8 @@
 
 /*
  * Apple I Emulator V0.1 - Terminal UI (Explicit 10-Fixed Font)
- * Explicitly loads /.rockbox/fonts/10-Fixed.fnt
+ * Loads /.rockbox/fonts/10-Fixed.fnt
+ * Keyboard chars split into two rows.
  */
 
 /* ============================================================
@@ -13,12 +14,13 @@
 #define SCREEN_H 176
 
 /* ============================================================
-   Colors (RGB565)
+   Colors (RGB565) - USER CAN CHANGE HERE
    ============================================================ */
-#define COLOR_BG      0x0000
-#define COLOR_TEXT    0x07E0    /* Green */
-#define COLOR_CURSOR  0xFFFF
-#define COLOR_LABEL   0x8410
+#define COLOR_BG      0x0000    /* Background: black */
+#define COLOR_TEXT    0x07E0    /* Text color: green (change to e.g. 0xFFFF for white) */
+#define COLOR_CURSOR  0xFFFF    /* Cursor underline: white */
+#define COLOR_LABEL   0x8410    /* Label "KB:": gray */
+#define COLOR_HIGHLIGHT_BG 0xFFFF /* Highlight background: white */
 
 /* ============================================================
    Video memory
@@ -38,32 +40,36 @@ static uint8_t  mock_x  = 0x00;
 static uint8_t  mock_y  = 0x00;
 
 /* ============================================================
-   Keyboard character set
+   Keyboard character set (split into two rows)
    ============================================================ */
-static const char *keyboard_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .:-+* /=();,";
-static int kb_index = 0;
+static const char *keyboard_chars_row1 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+static const char *keyboard_chars_row2 = "0123456789 .:-+* /=();,";
+static int kb_index = 0; /* global index into combined string */
+static int kb_total_len = 0;
 
 /* Font handle and dimensions */
 static struct font *fixed_font = NULL;
 static int char_w = 0;
 static int char_h = 0;
 
+/* Terminal geometry constants */
+static const int TOP_OFFSET = 14;
+static const int BOTTOM_MARGIN = 4;
+static const int LEFT_OFFSET = 0;
+
 /* ============================================================
    Explicitly load 10-Fixed font
    ============================================================ */
 static bool init_font(void)
 {
-    /* Load font file explicitly */
     fixed_font = rb->font_load("/.rockbox/fonts/10-Fixed.fnt");
     if (!fixed_font) {
         rb->splash(HZ*2, "Failed to load 10-Fixed.fnt");
         return false;
     }
 
-    /* Set the font */
     rb->lcd_setfont(fixed_font);
 
-    /* Get character dimensions from font */
     int w, h;
     rb->lcd_getstringsize("M", &w, &h);
     char_w = w;
@@ -75,15 +81,28 @@ static bool init_font(void)
     }
 
     /* Compute terminal size */
-    cols = (SCREEN_W - 4) / char_w;
+    cols = (SCREEN_W - LEFT_OFFSET) / char_w;
     if (cols > MAX_COLS) cols = MAX_COLS;
     if (cols < 10) cols = 10;
 
-    rows = (SCREEN_H - 16 - 4) / char_h;
+    rows = (SCREEN_H - TOP_OFFSET - BOTTOM_MARGIN) / char_h;
     if (rows > MAX_ROWS) rows = MAX_ROWS;
     if (rows < 4) rows = 4;
 
+    kb_total_len = rb->strlen(keyboard_chars_row1) + rb->strlen(keyboard_chars_row2);
     return true;
+}
+
+/* ============================================================
+   Get character at global index
+   ============================================================ */
+static char get_kb_char(int idx)
+{
+    int len1 = rb->strlen(keyboard_chars_row1);
+    if (idx < len1)
+        return keyboard_chars_row1[idx];
+    else
+        return keyboard_chars_row2[idx - len1];
 }
 
 /* ============================================================
@@ -103,8 +122,8 @@ static void draw_char_at(int px, int py, char ch, uint16_t color)
    ============================================================ */
 static void render_terminal(void)
 {
-    int px = 2;
-    int py = 16;
+    int px = LEFT_OFFSET;
+    int py = TOP_OFFSET;
 
     rb->lcd_set_foreground(COLOR_BG);
     rb->lcd_fillrect(px, py, cols * char_w, rows * char_h);
@@ -128,31 +147,50 @@ static void render_terminal(void)
 }
 
 /* ============================================================
-   Render keyboard selector
+   Render keyboard selector (two rows)
    ============================================================ */
 static void render_keyboard(void)
 {
-    int y = 16 + rows * char_h + 2;
-    rb->lcd_set_foreground(COLOR_LABEL);
-    rb->lcd_setfont(fixed_font);
-    rb->lcd_puts(0, 7, "KB: ");
+    int y_base = TOP_OFFSET + rows * char_h + 2;
+    int y = y_base;
+    int char_spacing = char_w + 2; /* small gap */
+    int len1 = rb->strlen(keyboard_chars_row1);
+    int len2 = rb->strlen(keyboard_chars_row2);
 
-    int len = rb->strlen(keyboard_chars);
-    int start_x = 24;
-    int char_spacing = char_w + 1;
-    int offset_x = (SCREEN_W - start_x - len * char_spacing) / 2 + start_x;
-
-    for (int i = 0; i < len; i++) {
-        int px = offset_x + i * char_spacing;
-        char ch = keyboard_chars[i];
+    /* Row 1 */
+    int x_start = (SCREEN_W - len1 * char_spacing) / 2;
+    for (int i = 0; i < len1; i++) {
+        int px = x_start + i * char_spacing;
+        char ch = keyboard_chars_row1[i];
         if (i == kb_index) {
-            rb->lcd_set_foreground(COLOR_CURSOR);
+            rb->lcd_set_foreground(COLOR_HIGHLIGHT_BG);
             rb->lcd_fillrect(px - 1, y - 1, char_w + 2, char_h + 2);
             draw_char_at(px, y, ch, COLOR_BG);
         } else {
             draw_char_at(px, y, ch, COLOR_TEXT);
         }
     }
+
+    /* Row 2 */
+    y += char_h + 2;
+    x_start = (SCREEN_W - len2 * char_spacing) / 2;
+    for (int i = 0; i < len2; i++) {
+        int idx = len1 + i;
+        int px = x_start + i * char_spacing;
+        char ch = keyboard_chars_row2[i];
+        if (idx == kb_index) {
+            rb->lcd_set_foreground(COLOR_HIGHLIGHT_BG);
+            rb->lcd_fillrect(px - 1, y - 1, char_w + 2, char_h + 2);
+            draw_char_at(px, y, ch, COLOR_BG);
+        } else {
+            draw_char_at(px, y, ch, COLOR_TEXT);
+        }
+    }
+
+    /* Label "KB:" positioned above the rows */
+    rb->lcd_set_foreground(COLOR_LABEL);
+    rb->lcd_setfont(fixed_font);
+    rb->lcd_puts(0, 7, "KB: ");
 }
 
 /* ============================================================
@@ -183,7 +221,7 @@ static void draw_ui(void)
 }
 
 /* ============================================================
-   Type a character
+   Type a character (with scrolling)
    ============================================================ */
 static void type_char(char ch)
 {
@@ -242,14 +280,15 @@ enum plugin_status plugin_start(const void *parameter)
 
         if (btn == BUTTON_MENU) break;
         else if (btn == BUTTON_PLAY) type_char('\r');
-        else if (btn == BUTTON_SCROLL_FWD) {
+        else if (btn == BUTTON_SCROLL_FWD || btn == BUTTON_SCROLL_FWD_REPEAT) {
             kb_index++;
-            if (kb_index >= (int)rb->strlen(keyboard_chars)) kb_index = 0;
-        } else if (btn == BUTTON_SCROLL_BACK) {
+            if (kb_index >= kb_total_len) kb_index = 0;
+        } else if (btn == BUTTON_SCROLL_BACK || btn == BUTTON_SCROLL_BACK_REPEAT) {
             kb_index--;
-            if (kb_index < 0) kb_index = rb->strlen(keyboard_chars) - 1;
+            if (kb_index < 0) kb_index = kb_total_len - 1;
         } else if (btn == BUTTON_SELECT) {
-            type_char(keyboard_chars[kb_index]);
+            char ch = get_kb_char(kb_index);
+            type_char(ch);
         } else if (btn == BUTTON_LEFT) {
             if (cursor_x > 0) cursor_x--;
             else if (cursor_y > 0) { cursor_y--; cursor_x = cols - 1; }

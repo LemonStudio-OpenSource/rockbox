@@ -310,6 +310,20 @@ static bool load_rom(void) {
     return true;
 }
 
+static bool load_monitor(void) {
+    int fd = rb->open("/apple1monitor.bin", O_RDONLY);
+    if (fd < 0) {
+        LOG("Monitor ROM not found, using built-in stubs");
+        return false;
+    }
+    size_t size = rb->filesize(fd);
+    if (size > 0x100) size = 0x100;  /* Monitor is 256 bytes */
+    rb->read(fd, mem + 0xFF00, size);
+    rb->close(fd);
+    LOG("Monitor ROM loaded: %d bytes at 0xFF00", (int)size);
+    return true;
+}
+
 /* ============================================================
    Force display some test text
    ============================================================ */
@@ -350,41 +364,22 @@ enum plugin_status plugin_start(const void *parameter) {
 
     init_video_text();
 
-    /* ===== 新增：模拟 Woz Monitor 子程序入口 ===== */
-    /* 指向我们的 I/O 处理地址 */
-    mem[0xFFD0] = 0x4C;  // JMP $D010 (读键盘)
-    mem[0xFFD1] = 0x10;
-    mem[0xFFD2] = 0xD0;
-    mem[0xFFEF] = 0x4C;  // JMP $D011 (输出字符)
-    mem[0xFFF0] = 0x11;
-    mem[0xFFF1] = 0xD0;
-    /* 设置复位向量到 BASIC 入口 (0xE000) */
+    /* 加载 Woz Monitor ROM */
+    if (!load_monitor()) {
+        /* fallback：Monitor ROM 不存在时，用最简 stub */
+        mem[0xFFEF] = 0x4C; mem[0xFFF0] = 0x11; mem[0xFFF1] = 0xD0; /* JMP $D011 */
+        mem[0xFFD0] = 0x4C; mem[0xFFD1] = 0x10; mem[0xFFD2] = 0xD0; /* JMP $D010 */
+        LOG("Using built-in Monitor stubs");
+    }
+
+    /* 确保复位向量指向 BASIC 入口 */
     mem[0xFFFC] = 0x00;
     mem[0xFFFD] = 0xE0;
-    /* ===== 补全 Woz Monitor 子程序入口 ===== */
-    /* 对于 BASIC 启动时可能调用的 Monitor 子程序，
-    先全部用 RTS (0x60) 占位，防止执行到空地址触发 BRK */
-
-    /* PRBYTE ($FFDC) - 打印十六进制字节 */
-    mem[0xFFDC] = 0x60;  // RTS
-    /* PRHEX ($FFE5) - 打印十六进制字符 */
-    mem[0xFFE5] = 0x60;  // RTS
-    /* GETLINE ($FFCC) - 读取一行 */
-    mem[0xFFCC] = 0x60;  // RTS
-    /* ESC ($FF6A) - 转义处理 */
-    mem[0xFF6A] = 0x60;  // RTS
-    /* 其他常见 Monitor 地址也填 RTS */
-    mem[0xFF69] = 0x60;
-    mem[0xFF70] = 0x60;
-    mem[0xFF75] = 0x60;
-    mem[0xFF80] = 0x60;
-    mem[0xFF90] = 0x60;
-    mem[0xFFA0] = 0x60;
-    mem[0xFFB0] = 0x60;
-    mem[0xFFC0] = 0x60;
-
-    LOG("Woz Monitor stubs filled with RTS");
-    LOG("Woz Monitor entry points simulated: KEYIN at $FFD0, COUT at $FFEF");
+    LOG("Reset vector set to $E000");
+    /* BRK/IRQ 向量指向 Monitor 的 BRK 处理或 BASIC 冷启动 */
+    mem[0xFFFE] = 0x00;
+    mem[0xFFFF] = 0xE0;
+    LOG("IRQ/BRK vector set to $E000");
 
     m6502_reset();
     LOG("CPU reset, PC=0x%04X", programcounter);

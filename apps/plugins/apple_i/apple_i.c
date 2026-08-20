@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include "plugin.h"
+int g_log_counter = 0;
+#define MAX_LOG_COUNT 5000
 #include "6502.h"
 
 /*
@@ -221,6 +223,7 @@ static void draw_ui(void) {
    Video output (called by CPU write)
    ============================================================ */
 static void video_type_char(char ch) {
+    LOG("VIDEO_TYPE_CHAR: ch=0x%02X cursor=(%d,%d)", (unsigned char)ch, cursor_x, cursor_y);
     if (ch == '\r') {
         cursor_x = 0;
         if (cursor_y < rows - 1) cursor_y++;
@@ -254,21 +257,38 @@ void (*cpu_write)(uint16_t addr, uint8_t val) = NULL;
 
 static uint8_t mem_read(uint16_t addr) {
     if (addr == 0xD010) {
+        uint8_t ret = key_ready ? (key_value | 0x80) : 0;
         if (key_ready) {
             key_ready = 0;
-            LOG("KEY read: 0x%02X ('%c')", key_value, key_value >= 32 ? key_value : '.');
-            return key_value | 0x80;
+            LOG("KEY READ D010 -> 0x%02X (key_value=0x%02X)", ret, key_value);
+        } else if (g_log_counter < MAX_LOG_COUNT) {
+            LOG("READ D010 -> 0x00 (no key)");
+            g_log_counter++;
         }
-        return 0;
+        return ret;
     }
     if (addr == 0xD011) {
-        /* 键盘控制寄存器：bit 7 = 1 表示有按键等待 */
-        return key_ready ? 0x80 : 0x00;
+        uint8_t ret = key_ready ? 0x80 : 0x00;
+        if (g_log_counter < MAX_LOG_COUNT) {
+            LOG("READ D011 -> 0x%02X (key_ready=%d)", ret, key_ready);
+            g_log_counter++;
+        }
+        return ret;
     }
-    return mem[addr];
+    uint8_t val = mem[addr];
+    if (g_log_counter < MAX_LOG_COUNT) {
+        LOG("READ %04X -> %02X", addr, val);
+        g_log_counter++;
+    }
+    return val;
 }
 
 static void mem_write(uint16_t addr, uint8_t val) {
+    if (addr == 0xD011 || addr == 0xD012 || addr == 0xD0F2) {
+        LOG("VIDEO WRITE %04X <- %02X ('%c') cursor=(%d,%d)",
+            addr, val, (val >= 0x20 && val < 0x7F) ? (val & 0x7F) : '.', cursor_x, cursor_y);
+        video_type_char((char)(val & 0x7F));
+    }
     if (addr >= 0x0200 && addr <= 0x03FF) {
         int offset = addr - 0x0200;
         int row = offset / cols;
@@ -276,16 +296,17 @@ static void mem_write(uint16_t addr, uint8_t val) {
         if (row < rows && col < cols) {
             char ch = val;
             if (ch < 32) ch = ' ';
-            if (video[row][col] != ch) {
-                LOG("VIDEO write addr=%04X val=0x%02X ('%c') at (%d,%d)", addr, val, val>=32?val:'.', row, col);
-                video[row][col] = ch;
-            }
+            video[row][col] = ch;
         }
-    }
-    /* Apple I 显示端口：$D012 是标准地址，$D0F2 因不完全解码等效 */
-    if (addr == 0xD011 || addr == 0xD012 || addr == 0xD0F2) {
-        if (addr == 0xD011) LOG("D011 write val=0x%02X ('%c')", val, val>=32?val:'.');
-        video_type_char((char)val);
+        if (g_log_counter < MAX_LOG_COUNT) {
+            LOG("MEM WRITE %04X <- %02X (video %d,%d)", addr, val, row, col);
+            g_log_counter++;
+        }
+    } else {
+        if (g_log_counter < MAX_LOG_COUNT) {
+            LOG("MEM WRITE %04X <- %02X", addr, val);
+            g_log_counter++;
+        }
     }
     mem[addr] = val;
 }
@@ -394,42 +415,46 @@ enum plugin_status plugin_start(const void *parameter) {
     cpu_halted = false;
 
     while (1) {
-        if (!cpu_halted) {
-            for (int i = 0; i < 500; i++) {
-                if (!m6502_step()) {
-                    cpu_halted = true;
-                    LOG("CPU HALTED (HLT instruction or invalid)");
-                    break;
-                }
+    if (!cpu_halted) {
+        LOG("=== CPU BATCH START ===");
+        for (int i = 0; i < 500; i++) {
+            if (!m6502_step()) {
+                cpu_halted = true;
+                LOG("!!! CPU HALTED at PC=0x%04X, opcode=0x%02X !!!",
+                    programcounter, mem[programcounter]);
+                break;
             }
         }
-
-        btn = rb->button_get(false);
-        if (btn == BUTTON_MENU) {
-            LOG("MENU pressed, exiting");
-            break;
-        }
-
-        if (btn == BUTTON_PLAY) {
-            LOG("PLAY pressed -> ENTER key");
-            key_ready = 1;
-            key_value = '\r';
-        } else if (btn == BUTTON_SCROLL_FWD) {
-            kb_index++;
-            if (kb_index >= kb_total_len) kb_index = 0;
-        } else if (btn == BUTTON_SCROLL_BACK) {
-            kb_index--;
-            if (kb_index < 0) kb_index = kb_total_len - 1;
-        } else if (btn == BUTTON_SELECT) {
-            char ch = get_kb_char(kb_index);
-            LOG("SELECT pressed -> key '%c' (0x%02X)", ch, ch);
-            key_ready = 1;
-            key_value = (uint8_t)ch;
-        }
-
-        draw_ui();
-        rb->yield();
+        LOG("=== CPU BATCH END (halted=%d) ===", cpu_halted);
     }
+
+    btn = rb->button_get(false);
+    if (btn == BUTTON_MENU) {
+        LOG("MENU pressed, exiting");
+        break;
+    }
+    if (btn == BUTTON_PLAY) {
+        LOG("PLAY pressed -> ENTER key, key_ready=%d", key_ready);
+        key_ready = 1;
+        key_value = '\r';
+    } else if (btn == BUTTON_SCROLL_FWD) {
+        kb_index++;
+        if (kb_index >= kb_total_len) kb_index = 0;
+        LOG("SCROLL_FWD -> kb_index=%d char='%c'", kb_index, get_kb_char(kb_index));
+    } else if (btn == BUTTON_SCROLL_BACK) {
+        kb_index--;
+        if (kb_index < 0) kb_index = kb_total_len - 1;
+        LOG("SCROLL_BACK -> kb_index=%d char='%c'", kb_index, get_kb_char(kb_index));
+    } else if (btn == BUTTON_SELECT) {
+        char ch = get_kb_char(kb_index);
+        LOG("SELECT pressed -> key '%c' (0x%02X), key_ready=%d", ch, ch, key_ready);
+        key_ready = 1;
+        key_value = (uint8_t)ch;
+    }
+
+    draw_ui();
+    rb->yield();
+}
 
     LOG("=== Apple I Emulator EXIT ===");
     return PLUGIN_OK;

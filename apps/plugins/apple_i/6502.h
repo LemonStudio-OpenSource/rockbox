@@ -374,31 +374,31 @@ static void STY_zpg() {
 /* ADC */
 static void ADC_a() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter));
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(dbyte(programcounter));
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 2;
 }
 static void ADC_aX() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter) + regX);
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(dbyte(programcounter) + regX);
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 2;
 }
 static void ADC_aY() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(programcounter) + regY);
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(dbyte(programcounter) + regY);
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 2;
 }
@@ -414,41 +414,41 @@ static void ADC_I() {
 }
 static void ADC_zpg() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(cpu_read(programcounter));
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(cpu_read(programcounter));
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 1;
 }
 static void ADC_zpgX() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(cpu_read(programcounter) + regX);
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(cpu_read(programcounter) + regX);
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 1;
 }
 static void ADC_ind_Y() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter)) + regY);
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter)) + regY);
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 1;
 }
 static void ADC_X_ind() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter) + regX));
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter) + regX));
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 1;
 }

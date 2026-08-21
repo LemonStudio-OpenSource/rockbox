@@ -370,6 +370,14 @@ static void init_video_text(void) {
     LOG("Initial video text set");
 }
 
+static uint8_t apple_i_cpu_read(uint16_t addr)
+{
+    if (addr == 0xD0F2 || addr == 0xD012) {
+        return mem[addr] & 0x7F;  // 强制 bit7 = 0，让 BIT/BMI 通过
+    }
+    return mem[addr];
+}
+
 /* ============================================================
    Plugin entry
    ============================================================ */
@@ -381,7 +389,7 @@ enum plugin_status plugin_start(const void *parameter) {
 
     if (!init_font()) return PLUGIN_ERROR;
 
-    cpu_read = mem_read;
+    cpu_read = apple_i_cpu_read;
     cpu_write = mem_write;
 
     rom_loaded = load_rom();

@@ -405,7 +405,7 @@ enum plugin_status plugin_start(const void *parameter) {
     LOG("Reset vector set to $E000");
     /* BRK/IRQ 向量指向 Monitor 的 BRK 处理或 BASIC 冷启动 */
     mem[0xFFFE] = 0x00;
-    mem[0xFFFF] = 0xE0;
+    mem[0xFFFF] = 0xFF;
     LOG("IRQ/BRK vector set to $E000");
 
     m6502_reset();

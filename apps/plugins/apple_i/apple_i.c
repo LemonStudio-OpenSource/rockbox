@@ -7,6 +7,7 @@ int g_log_counter = 0;
    Logging configuration
    ============================================================ */
 #define LOG_ENABLED 1
+#if LOG_ENABLED
 #define LOG_FILE "/apple_i.log"
 #define LOG_MAX_SIZE (128 * 1024)  /* 最大 128KB 日志缓冲 */
 
@@ -305,8 +306,8 @@ static void video_type_char(char ch) {
             if (cursor_y < rows - 1) cursor_y++;
             else {
                 for (int r = 1; r < rows; r++)
-                    rb->memcpy(video[r-1], video[r], cols);
-                rb->memset(video[rows-1], ' ', cols);
+                    rb->memcpy(video[r-1], video[r], MAX_COLS);
+                rb->memset(video[rows-1], ' ', MAX_COLS);
             }
         }
     }
@@ -445,6 +446,7 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
 enum plugin_status plugin_start(const void *parameter) {
     (void)parameter;
     log_init();
+    init_input();
     int btn;
 
     LOG("=== Apple I Emulator START ===");
@@ -526,6 +528,9 @@ enum plugin_status plugin_start(const void *parameter) {
                 LOG("MENU pressed, exiting");
                 LOG("=== Apple I Emulator EXIT ===");
                 log_flush();        /* Write logs to the disk */
+            #ifdef HAVE_WHEEL_POSITION
+                rb->wheel_send_events(true);  // 恢复滚轮事件
+            #endif
                 return PLUGIN_OK;        /* <--The only way out is here */
             }
             if (btn == BUTTON_PLAY) {

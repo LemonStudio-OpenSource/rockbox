@@ -256,7 +256,7 @@ static void video_type_char(char ch) {
 uint8_t (*cpu_read)(uint16_t addr) = NULL;
 void (*cpu_write)(uint16_t addr, uint8_t val) = NULL;
 
-static uint8_t mem_read(uint16_t addr) {
+static uint8_t mem_read(uint16_t addr) {        /* NOTICE：This Function is deprecated! Need to handle keyboard input,please use the "apple_i_cpu_read" function */
     if (addr == 0xD010) {
         uint8_t ret = key_ready ? (key_value | 0x80) : 0;
         if (key_ready) {
@@ -372,9 +372,28 @@ static void init_video_text(void) {
 
 static uint8_t apple_i_cpu_read(uint16_t addr)
 {
-    if (addr == 0xD0F2 || addr == 0xD012) {
-        return mem[addr] & 0x7F;  // 强制 bit7 = 0，让 BIT/BMI 通过
+    /* 键盘数据端口 */
+    if (addr == 0xD010) {
+        uint8_t ret = key_ready ? (key_value | 0x80) : 0;
+        if (key_ready) {
+            key_ready = 0;
+            LOG("KEY READ D010 -> 0x%02X (key_value=0x%02X)", ret, key_value);
+        }
+        return ret;
     }
+
+    /* 键盘状态端口 */
+    if (addr == 0xD011) {
+        uint8_t ret = key_ready ? 0x80 : 0x00;
+        LOG("READ D011 -> 0x%02X (key_ready=%d)", ret, key_ready);
+        return ret;
+    }
+
+    /* 视频端口：强制 bit7 = 0，避免 BIT/BMI 误判 */
+    if (addr == 0xD0F2 || addr == 0xD012) {
+        return mem[addr] & 0x7F;
+    }
+
     return mem[addr];
 }
 

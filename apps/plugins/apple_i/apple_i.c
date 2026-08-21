@@ -403,7 +403,7 @@ static void init_video_text(void) {
         rb->memset(video[r], ' ', MAX_COLS);
         video[r][MAX_COLS] = '\0';
     }
-    const char *msg = "APPLE I EMULATOR READY";
+    const char *msg = "APPLE I EMULATOR BY LEMONSTUDIO";
     int len = rb->strlen(msg);
     if (len > cols) len = cols;
     rb->memcpy(video[0], msg, len);
@@ -536,7 +536,7 @@ enum plugin_status plugin_start(const void *parameter) {
             if (btn == BUTTON_PLAY) {
                 key_ready = 1;
                 key_value = '\r';
-                LOG("PLAY -> ENTER");
+                LOG("PLAY pressed,link to ENTER");
             } else if (btn == BUTTON_SCROLL_FWD) {
                 kb_index++;
                 if (kb_index >= kb_total_len) kb_index = 0;
@@ -547,7 +547,7 @@ enum plugin_status plugin_start(const void *parameter) {
                 char ch = get_kb_char(kb_index);
                 key_ready = 1;
                 key_value = (uint8_t)ch;
-                LOG("SELECT -> '%c'", ch);
+                LOG("SELECT pressed,link to '%c'", ch);
             }
         }
 

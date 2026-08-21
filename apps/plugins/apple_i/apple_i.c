@@ -47,6 +47,11 @@ static void log_message(const char *fmt, ...) {
  * Logs to /apple_i.log
  */
 
+static void init_input(void) {
+#ifdef HAVE_WHEEL_POSITION
+    rb->wheel_send_events(false);  // 关闭默认事件，我们自己轮询
+#endif
+}
 
 
 /* ============================================================
@@ -469,6 +474,8 @@ enum plugin_status plugin_start(const void *parameter) {
     LOG("PC forced to 0xE000 (BASIC entry)");
     cpu_halted = false;
 
+    static int last_wheel = -1;
+
     while (1) {
         if (!cpu_halted) {
             for (int i = 0; i < 500; i++) {
@@ -480,6 +487,28 @@ enum plugin_status plugin_start(const void *parameter) {
             }
         }
 
+
+            /* ===== 滚轮连续输入（核心修改）===== */
+    #ifdef HAVE_WHEEL_POSITION
+        int wheel = rb->wheel_status();  // 0~95 绝对位置
+        if (wheel >= 0 && last_wheel >= 0) {
+            int delta = wheel - last_wheel;
+            /* 处理 0<->95 回绕 */
+            if (delta < -48) delta += 96;
+            else if (delta > 48) delta -= 96;
+        
+            /* 转得越快跳得越多，最小灵敏度 2 格 */
+            if (delta >= 2) {
+                kb_index += delta / 2;
+                if (kb_index >= kb_total_len) kb_index -= kb_total_len;
+            } else if (delta <= -2) {
+                kb_index += delta / 2;  // delta 是负数
+                if (kb_index < 0) kb_index += kb_total_len;
+            }
+        }
+        last_wheel = wheel;
+    #endif
+       
         /* 批量处理所有待处理的按钮事件 */
         while ((btn = rb->button_get(false)) != 0) {
             if (btn == BUTTON_MENU) {

@@ -719,8 +719,24 @@ enum plugin_status plugin_start(const void *parameter) {
                     LOG("ABOUT command executed");
                 } else if (input_len == 1 && input_buf[0] == 'H') {
                     input_len = 0;
-                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\r> ");
+                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\rRST - Reset and clear RAM\r> ");
                     LOG("HELP command executed");
+                } else if (input_len == 3 && input_buf[0] == 'R' && input_buf[1] == 'S' && input_buf[2] == 'T') {
+                    input_len = 0;
+                    /* 强制重置：清零 RAM，保留 ROM，进入 Woz Monitor */
+                    rb->memset(mem, 0, 0xE000);  /* 只清 $0000-$DFFF，保留 $E000-$FFFF 的 ROM */
+                    for (int r = 0; r < MAX_ROWS; r++) {
+                        rb->memset(video[r], ' ', MAX_COLS);
+                    }
+                    cursor_x = 0;
+                    cursor_y = 0;
+                    m6502_reset();
+                    programcounter = 0xFF00;  /* 直接跳 Monitor 入口 */
+                    cpu_halted = false;
+                    key_ready = 0;
+                    playback_pos = playback_len = 0;
+                    terminal_print("\\ ");    /* Monitor 提示符 */
+                    LOG("RST command executed, hard reset to Monitor");
                 } else {
                     /* Normal input: playback buffered chars + CR */
                     if (input_len > 0) {

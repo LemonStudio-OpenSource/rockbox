@@ -537,6 +537,15 @@ static bool load_program(void) {
     return true;
 }
 
+/* ============================================================
+   Terminal direct print (bypass ROM)
+   ============================================================ */
+static void terminal_print(const char *str) {
+    while (*str) {
+        video_type_char(*str++);
+    }
+}
+
 
 /* ============================================================
    Force display some test text
@@ -704,6 +713,14 @@ enum plugin_status plugin_start(const void *parameter) {
                     input_len = 0;
                     /* Playback starts automatically next frame */
                     LOG("PROGRAM LOAD command executed");
+                } else if (input_len == 1 && input_buf[0] == 'A') {
+                    input_len = 0;
+                    terminal_print("\rApple I Emulator For Rockbox\rby LemonStudio\rThis is open-source software\rCommercial use prohibited\rLicense: GPLv2\r> ");
+                    LOG("ABOUT command executed");
+                } else if (input_len == 1 && input_buf[0] == 'H') {
+                    input_len = 0;
+                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\r> ");
+                    LOG("HELP command executed");
                 } else {
                     /* Normal input: playback buffered chars + CR */
                     if (input_len > 0) {
@@ -723,6 +740,29 @@ enum plugin_status plugin_start(const void *parameter) {
             } else if (btn == BUTTON_SCROLL_BACK) {
                 kb_index--;
                 if (kb_index < 0) kb_index = kb_total_len - 1;
+            } else if (btn == BUTTON_PREV) {
+                if (input_len > 0) {
+                    input_len--;
+                    LOG("PREV pressed, backspace buffered input, len=%d", input_len);
+                } else {
+                    /* 缓冲为空时，发送 Apple I 退格符 '_' (0x5F) 给 ROM */
+                    key_ready = 1;
+                    key_value = '_';
+                    LOG("PREV pressed, send '_' backspace to ROM");
+                }
+            } else if (btn == BUTTON_NEXT) {
+                if (playback_pos < playback_len) {
+                    /* 停止正在进行的程序回放 */
+                    playback_pos = playback_len = 0;
+                    LOG("NEXT pressed, playback aborted");
+                } else {
+                    /* 软 RESET：跳转到 Monitor 入口，不清内存 */
+                    programcounter = 0xFF00;
+                    cpu_halted = false;
+                    key_ready = 0;
+                    input_len = 0;
+                    LOG("NEXT pressed, soft RESET to Monitor $FF00");
+                }            
             } else if (btn == BUTTON_SELECT) {
                 if (playback_pos < playback_len) {
                     LOG("SELECT ignored: playback in progress");

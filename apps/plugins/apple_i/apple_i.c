@@ -125,9 +125,9 @@ static bool init_font(void) {
 }
 
 static char get_kb_char(int idx) {
-    int len1 = rb->strlen(keyboard_chars_row1);
-    if (idx < len1) return keyboard_chars_row1[idx];
-    else return keyboard_chars_row2[idx - len1];
+    if (idx >= 0 && idx < kb_total_len)
+        return key_chars[idx];
+    return ' ';
 }
 
 /* ============================================================
@@ -169,13 +169,13 @@ static void render_terminal(void) {
 static void render_keyboard(void)
 {
     int i;
-    int x = 0, y = SCREEN_H - 2 * char_h - 2;  /* 键盘底部对齐 */
+    int y = SCREEN_H - 2 * char_h - 2;
     int start_x = 0;
 
     /* 第一行：字母 A-Z */
     for (i = 0; i < 26; i++) {
         char buf[2] = {key_chars[i], '\0'};
-        if (i == key_idx) {
+        if (i == kb_index) {
             rb->lcd_set_foreground(LCD_BLACK);
             rb->lcd_set_background(LCD_WHITE);
         } else {
@@ -189,24 +189,26 @@ static void render_keyboard(void)
     y += char_h + 2;
     start_x = 0;
     for (i = 26; i < (int)sizeof(key_chars)-1; i++) {
-        char buf[5];
         int w = 1;
-        
-        /* render_keyboard 显示时替换 */
-        if (key_chars[i] == ' ') {
-            rb->lcd_putsxy(start_x, y, "\xE2\x90\xA3");  /* ␣ */
-        } else {
-            char buf[2] = {key_chars[i], '\0'};
-            rb->lcd_putsxy(start_x, y, buf);
-        }
+        char buf[5];
 
-        if (i == key_idx) {
+        /* 先设置颜色 */
+        if (i == kb_index) {
             rb->lcd_set_foreground(LCD_BLACK);
             rb->lcd_set_background(LCD_WHITE);
         } else {
             rb->lcd_set_foreground(LCD_WHITE);
             rb->lcd_set_background(LCD_BLACK);
         }
+
+        /* 空格显示为 ␣，其他正常显示 */
+        if (key_chars[i] == ' ') {
+            rb->snprintf(buf, sizeof(buf), "\xE2\x90\xA3"); /* ␣ U+2423 */
+        } else {
+            buf[0] = key_chars[i];
+            buf[1] = '\0';
+        }
+
         rb->lcd_putsxy(start_x, y, buf);
         start_x += w * char_w;
     }

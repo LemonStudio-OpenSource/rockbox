@@ -6,40 +6,69 @@ int g_log_counter = 0;
 /* ============================================================
    Logging configuration
    ============================================================ */
-#define LOG_ENABLED 1   /* set to 0 to disable logging */
-
-#if LOG_ENABLED
+#define LOG_ENABLED 1
 #define LOG_FILE "/apple_i.log"
+#define LOG_MAX_SIZE (128 * 1024)  /* 最大 128KB 日志缓冲 */
+
+static char *log_buf = NULL;
+static size_t log_buf_size = 0;
+static size_t log_buf_used = 0;
+static long log_start_ticks = 0;
+
+/* 初始化日志缓冲区（使用 plugin_get_buffer 获取内存） */
+static bool log_init(void) {
+    size_t avail;
+    log_buf = rb->plugin_get_buffer(&avail);
+    if (!log_buf || avail < 4096) {
+        /* fallback：用静态小缓冲区 */
+        static char fallback[4096];
+        log_buf = fallback;
+        log_buf_size = sizeof(fallback);
+    } else {
+        log_buf_size = (avail < LOG_MAX_SIZE) ? avail : LOG_MAX_SIZE;
+    }
+    log_buf_used = 0;
+    log_start_ticks = 0;
+    return true;
+}
 
 /* Write a log message (timestamp + message) */
 static void log_message(const char *fmt, ...) {
-    char buf[256];
+#if LOG_ENABLED
+    if (!log_buf || log_buf_used >= log_buf_size - 256) return;
+    
+    char tmp[256];
     va_list args;
     va_start(args, fmt);
-    rb->vsnprintf(buf, sizeof(buf), fmt, args);
+    rb->vsnprintf(tmp, sizeof(tmp), fmt, args);
     va_end(args);
-
-    /* Add timestamp (seconds since plugin start) */
-    static long start_ticks = 0;
-    if (start_ticks == 0) {
-        start_ticks = *rb->current_tick;   /* dereference pointer */
-    }
-    long seconds = (*rb->current_tick - start_ticks) / HZ;
-    char full[300];
-    rb->snprintf(full, sizeof(full), "[%lds] %s\n", seconds, buf);
-
-    /* Write to file */
-    int fd = rb->open(LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    if (fd >= 0) {
-        rb->write(fd, full, rb->strlen(full));
-        rb->close(fd);
-    }
+    
+    if (log_start_ticks == 0) log_start_ticks = *rb->current_tick;
+    long seconds = (*rb->current_tick - log_start_ticks) / HZ;
+    
+    int n = rb->snprintf(log_buf + log_buf_used, log_buf_size - log_buf_used,
+                         "[%lds] %s\n", seconds, tmp);
+    if (n > 0) log_buf_used += n;
+#endif
 }
 
 #define LOG(fmt, ...) log_message(fmt, ##__VA_ARGS__)
 #else
 #define LOG(fmt, ...) ((void)0)
 #endif
+
+/* 退出时一次性刷到硬盘 */
+static void log_flush(void) {
+#if LOG_ENABLED
+    if (!log_buf || log_buf_used == 0) return;
+    int fd = rb->open(LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd >= 0) {
+        rb->write(fd, log_buf, log_buf_used);
+        rb->close(fd);
+    }
+#endif
+}
+
 #include "6502.h"
 
 /*
@@ -318,29 +347,10 @@ static uint8_t mem_read(uint16_t addr) {        /* NOTICE：This Function is dep
 }
 
 static void mem_write(uint16_t addr, uint8_t val) {
-    if (addr == 0xD011 || addr == 0xD012 || addr == 0xD0F2) {
+    if (addr == 0xD012 || addr == 0xD0F2) {
         LOG("VIDEO WRITE %04X <- %02X ('%c') cursor=(%d,%d)",
             addr, val, (val >= 0x20 && val < 0x7F) ? (val & 0x7F) : '.', cursor_x, cursor_y);
         video_type_char((char)(val & 0x7F));
-    }
-    if (addr >= 0x0200 && addr <= 0x03FF) {
-        int offset = addr - 0x0200;
-        int row = offset / MAX_COLS;
-        int col = offset % MAX_COLS;
-        if (row < MAX_ROWS && col < MAX_COLS) {
-            char ch = val;
-            if (ch < 32) ch = ' ';
-            video[row][col] = ch;
-        }
-        if (g_log_counter < MAX_LOG_COUNT) {
-            LOG("MEM WRITE %04X <- %02X (video %d,%d)", addr, val, row, col);
-            g_log_counter++;
-        }
-    } else {
-        if (g_log_counter < MAX_LOG_COUNT) {
-            LOG("MEM WRITE %04X <- %02X", addr, val);
-            g_log_counter++;
-        }
     }
     mem[addr] = val;
 }
@@ -434,6 +444,7 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
    ============================================================ */
 enum plugin_status plugin_start(const void *parameter) {
     (void)parameter;
+    log_init();
     int btn;
 
     LOG("=== Apple I Emulator START ===");
@@ -514,6 +525,7 @@ enum plugin_status plugin_start(const void *parameter) {
             if (btn == BUTTON_MENU) {
                 LOG("MENU pressed, exiting");
                 LOG("=== Apple I Emulator EXIT ===");
+                log_flush();        /* Write logs to the disk */
                 return PLUGIN_OK;        /* <--The only way out is here */
             }
             if (btn == BUTTON_PLAY) {

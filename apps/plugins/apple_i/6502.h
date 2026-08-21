@@ -1058,7 +1058,7 @@ static void JMP_a() {
 
 /* JSR / RTS / RTI */
 static void JSR() {
-    uint16_t ret = programcounter + 2;  /* From +1 fixed to +2 */
+    uint16_t ret = programcounter + 1;  /* From +2 fixed to +1 */    /* It can only be 1 here, otherwise the CPU will halt. */
     pushstack(ret >> 8);
     pushstack(ret & 0xFF);
     programcounter = dbyte(programcounter);

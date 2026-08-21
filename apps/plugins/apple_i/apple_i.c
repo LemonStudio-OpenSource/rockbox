@@ -124,7 +124,7 @@ static uint8_t key_ready = 0;
 static uint8_t key_value = 0;
 
 /* Command input buffer */
-static char input_buf[64];
+static char input_buf[1024];
 static int input_len = 0;
 
 /* Program playback buffer */
@@ -206,6 +206,21 @@ static void render_terminal(void) {
     if (cursor_x < cols && cursor_y < rows) {
         int cx = px + cursor_x * char_w;
         int cy = py + cursor_y * char_h + char_h - 2;
+        rb->lcd_set_foreground(COLOR_CURSOR);
+        rb->lcd_fillrect(cx, cy, char_w, 1);
+    }
+        /* ===== 本地回显：显示已缓冲但未发送给 ROM 的输入 ===== */
+    if (input_len > 0) {
+        int echo_x = px + cursor_x * char_w;
+        int echo_y = py + cursor_y * char_h;
+        rb->lcd_set_foreground(COLOR_TEXT);
+        for (int i = 0; i < input_len && (cursor_x + i) < cols; i++) {
+            char str[2] = {input_buf[i], 0};
+            rb->lcd_putsxy(echo_x + i * char_w, echo_y, str);
+        }
+        /* 把光标画在输入末尾 */
+        int cx = echo_x + input_len * char_w;
+        int cy = echo_y + char_h - 2;
         rb->lcd_set_foreground(COLOR_CURSOR);
         rb->lcd_fillrect(cx, cy, char_w, 1);
     }

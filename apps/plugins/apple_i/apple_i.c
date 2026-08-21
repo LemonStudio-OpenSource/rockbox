@@ -756,7 +756,7 @@ enum plugin_status plugin_start(const void *parameter) {
             } else if (btn == BUTTON_SCROLL_BACK) {
                 kb_index--;
                 if (kb_index < 0) kb_index = kb_total_len - 1;
-            } else if (btn == BUTTON_PREV) {
+            } else if (btn == BUTTON_LEFT) {
                 if (input_len > 0) {
                     input_len--;
                     LOG("PREV pressed, backspace buffered input, len=%d", input_len);
@@ -766,7 +766,7 @@ enum plugin_status plugin_start(const void *parameter) {
                     key_value = '_';
                     LOG("PREV pressed, send '_' backspace to ROM");
                 }
-            } else if (btn == BUTTON_NEXT) {
+            } else if (btn == BUTTON_RIGHT) {
                 if (playback_pos < playback_len) {
                     /* 停止正在进行的程序回放 */
                     playback_pos = playback_len = 0;

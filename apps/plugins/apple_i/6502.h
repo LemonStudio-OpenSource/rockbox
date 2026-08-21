@@ -214,7 +214,7 @@ static void BRK() {
     Status |= 0b00000100; /* SEI */
     programcounter = dbyte(0xFFFE);
 }
-static void NOP() { programcounter++; }
+static void NOP() { /* 1-byte: no PC change */ }
 static void JAM() { Status |= 0b00010000; programcounter++; }
 
 /* LDA */
@@ -517,12 +517,12 @@ static void INC_zpgX() {
 static void INX() {
     regX++;
     set_flags(regX);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void INY() {
     regY++;
     set_flags(regY);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 
 /* DEC */
@@ -553,12 +553,12 @@ static void DEC_zpgX() {
 static void DEX() {
     regX--;
     set_flags(regX);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void DEY() {
     regY--;
     set_flags(regY);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 
 /* ASL */
@@ -988,50 +988,50 @@ static void BVS() {
 static void TAX() {
     regX = regA;
     set_flags(regX);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void TXA() {
     regA = regX;
     set_flags(regA);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void TAY() {
     regY = regA;
     set_flags(regY);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void TYA() {
     regA = regY;
     set_flags(regA);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void TSX() {
     regX = StackPointer;
     set_flags(regX);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void TXS() {
     StackPointer = regX;
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 
 /* Stack */
 static void PHA() {
     pushstack(regA);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void PLA() {
     regA = pullstack();
     set_flags(regA);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void PHP() {
     pushstack(Status | 0b00110000);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void PLP() {
     Status = pullstack() & 0b11101111;
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 
 /* JMP */
@@ -1067,13 +1067,13 @@ static void RTI() {
 }
 
 /* Flag ops */
-static void CLC() { Status &= ~1; programcounter++; }
-static void SEC() { Status |= 1; programcounter++; }
-static void CLD() { Status &= ~0b00001000; programcounter++; }
-static void SED() { Status |= 0b00001000; programcounter++; }
-static void CLI() { Status &= ~0b00000100; programcounter++; }
-static void SEI() { Status |= 0b00000100; programcounter++; }
-static void CLV() { Status &= ~0b01000000; programcounter++; }
+static void CLC() { Status &= ~1; /* 1-byte: no PC change */ }
+static void SEC() { Status |= 1; /* 1-byte: no PC change */ }
+static void CLD() { Status &= ~0b00001000; /* 1-byte: no PC change */ }
+static void SED() { Status |= 0b00001000; /* 1-byte: no PC change */ }
+static void CLI() { Status &= ~0b00000100; /* 1-byte: no PC change */ }
+static void SEI() { Status |= 0b00000100; /* 1-byte: no PC change */ }
+static void CLV() { Status &= ~0b01000000; /* 1-byte: no PC change */ }
 
 /* Instruction decode table */
 static void (*instructionArr[])(void) = {

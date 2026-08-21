@@ -322,7 +322,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
         int offset = addr - 0x0200;
         int row = offset / MAX_COLS;
         int col = offset % MAX_COLS;
-        if (row < MAX_COLS && col < MAX_COLS) {
+        if (row < MAX_ROWS && col < MAX_COLS) {
             char ch = val;
             if (ch < 32) ch = ' ';
             video[row][col] = ch;

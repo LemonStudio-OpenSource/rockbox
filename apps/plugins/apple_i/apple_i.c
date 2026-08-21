@@ -79,9 +79,10 @@ static bool rom_loaded = false;
 static struct font *fixed_font = NULL;
 static int char_w = 0, char_h = 0;
 static const char key_chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    " .:+*=();,";
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"   /* 0-25  */
+    "0123456789"                    /* 26-35 */
+    " !\"#$%&'()*+,-./"             /* 36-52: 空格+符号前半 */
+    ":;<=>?@[\\]^_`{|}~";           /* 53-68: 符号后半 */
 static int kb_index = 0, kb_total_len = 0;
 
 static uint8_t key_ready = 0;
@@ -117,8 +118,8 @@ static bool init_font(void) {
     rows = (SCREEN_H - TOP_OFFSET - BOTTOM_MARGIN) / char_h;
     if (rows > MAX_ROWS) rows = MAX_ROWS;
     if (rows < 4) rows = 4;
-    /* 为键盘预留 2 行 + 间距 */
-    if (rows > 12) rows = 12;
+    /* 为键盘预留 3 行 + 间距 */
+    if (rows > 10) rows = 10;
     kb_total_len = sizeof(key_chars) - 1;  /* 去掉末尾 '\0' */
     LOG("Terminal: cols=%d rows=%d char_w=%d char_h=%d", cols, rows, char_w, char_h);
     return true;
@@ -169,11 +170,11 @@ static void render_terminal(void) {
 static void render_keyboard(void)
 {
     int i;
-    int y = SCREEN_H - 2 * char_h - 2;
+    int y = SCREEN_H - 3 * char_h - 4;  /* 3行 + 2个2px间距 */
     int start_x = 0;
 
-    /* 第一行：字母 A-Z */
-    for (i = 0; i < 26; i++) {
+    /* ========== 第1行：A-Z + 0-9 (36个) ========== */
+    for (i = 0; i < 36; i++) {
         char buf[2] = {key_chars[i], '\0'};
         if (i == kb_index) {
             rb->lcd_set_foreground(COLOR_BG);
@@ -185,14 +186,11 @@ static void render_keyboard(void)
         rb->lcd_putsxy(start_x + i * char_w, y, buf);
     }
 
-    /* 第二行：数字和符号 */
+    /* ========== 第2行：空格 + !"#$%&'()*+,-./ (17个) ========== */
     y += char_h + 2;
     start_x = 0;
-    for (i = 26; i < (int)sizeof(key_chars)-1; i++) {
-        int w = 1;
+    for (i = 36; i < 53; i++) {
         char buf[5];
-
-        /* 先设置颜色 */
         if (i == kb_index) {
             rb->lcd_set_foreground(COLOR_BG);
             rb->lcd_set_background(COLOR_TEXT);
@@ -200,17 +198,30 @@ static void render_keyboard(void)
             rb->lcd_set_foreground(COLOR_TEXT);
             rb->lcd_set_background(COLOR_BG);
         }
-
-        /* 空格显示为 ␣，其他正常显示 */
         if (key_chars[i] == ' ') {
             rb->snprintf(buf, sizeof(buf), "\xE2\x90\xA3"); /* ␣ U+2423 */
         } else {
             buf[0] = key_chars[i];
             buf[1] = '\0';
         }
-
         rb->lcd_putsxy(start_x, y, buf);
-        start_x += w * char_w;
+        start_x += char_w;
+    }
+
+    /* ========== 第3行：:;<=>?@[\]^_`{|}~ (16个) ========== */
+    y += char_h + 2;
+    start_x = 0;
+    for (i = 53; i < 69; i++) {
+        char buf[2] = {key_chars[i], '\0'};
+        if (i == kb_index) {
+            rb->lcd_set_foreground(COLOR_BG);
+            rb->lcd_set_background(COLOR_TEXT);
+        } else {
+            rb->lcd_set_foreground(COLOR_TEXT);
+            rb->lcd_set_background(COLOR_BG);
+        }
+        rb->lcd_putsxy(start_x, y, buf);
+        start_x += char_w;
     }
 
     rb->lcd_set_foreground(COLOR_TEXT);
@@ -255,7 +266,7 @@ static void video_type_char(char ch) {
     if (ch >= 32 && ch <= 126) {
         video[cursor_y][cursor_x] = ch;
         cursor_x++;
-        if (cursor_x >= cols) {
+        if (cursor_x >= MAX_COLS) {
             cursor_x = 0;
             if (cursor_y < rows - 1) cursor_y++;
             else {
@@ -309,9 +320,9 @@ static void mem_write(uint16_t addr, uint8_t val) {
     }
     if (addr >= 0x0200 && addr <= 0x03FF) {
         int offset = addr - 0x0200;
-        int row = offset / cols;
-        int col = offset % cols;
-        if (row < rows && col < cols) {
+        int row = offset / MAX_COLS;
+        int col = offset % MAX_COLS;
+        if (row < MAX_COLS && col < MAX_COLS) {
             char ch = val;
             if (ch < 32) ch = ' ';
             video[row][col] = ch;
@@ -402,7 +413,6 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
     /* 键盘状态端口 */
     if (addr == 0xD011) {
         uint8_t ret = key_ready ? 0x80 : 0x00;
-        LOG("READ D011 -> 0x%02X (key_ready=%d)", ret, key_ready);
         return ret;
     }
 
@@ -461,45 +471,44 @@ enum plugin_status plugin_start(const void *parameter) {
 
     while (1) {
     if (!cpu_halted) {
-        LOG("=== CPU BATCH START ===");
         for (int i = 0; i < 500; i++) {
             if (!m6502_step()) {
                 cpu_halted = true;
-                LOG("!!! CPU HALTED at PC=0x%04X, opcode=0x%02X !!!",
-                    programcounter, mem[programcounter]);
+                LOG("CPU HALT PC=%04X op=%02X", programcounter, mem[programcounter]);
                 break;
             }
         }
-        LOG("=== CPU BATCH END (halted=%d) ===", cpu_halted);
     }
 
-    btn = rb->button_get(false);
-    if (btn == BUTTON_MENU) {
-        LOG("MENU pressed, exiting");
-        break;
-    }
-    if (btn == BUTTON_PLAY) {
-        LOG("PLAY pressed -> ENTER key, key_ready=%d", key_ready);
-        key_ready = 1;
-        key_value = '\r';
-    } else if (btn == BUTTON_SCROLL_FWD) {
-        kb_index++;
-        if (kb_index >= kb_total_len) kb_index = 0;
-        LOG("SCROLL_FWD -> kb_index=%d char='%c'", kb_index, get_kb_char(kb_index));
-    } else if (btn == BUTTON_SCROLL_BACK) {
-        kb_index--;
-        if (kb_index < 0) kb_index = kb_total_len - 1;
-        LOG("SCROLL_BACK -> kb_index=%d char='%c'", kb_index, get_kb_char(kb_index));
-    } else if (btn == BUTTON_SELECT) {
-        char ch = get_kb_char(kb_index);
-        LOG("SELECT pressed -> key '%c' (0x%02X), key_ready=%d", ch, ch, key_ready);
-        key_ready = 1;
-        key_value = (uint8_t)ch;
+    /* ✅ 批量处理所有待处理的按钮事件 */
+    while ((btn = rb->button_get(false)) != 0) {
+        if (btn == BUTTON_MENU) {
+            LOG("MENU pressed, exiting");
+            goto exit;  // 或设置退出标志
+        }
+        if (btn == BUTTON_PLAY) {
+            key_ready = 1;
+            key_value = '\r';
+            LOG("PLAY -> ENTER");
+        } else if (btn == BUTTON_SCROLL_FWD) {
+            kb_index++;
+            if (kb_index >= kb_total_len) kb_index = 0;
+        } else if (btn == BUTTON_SCROLL_BACK) {
+            kb_index--;
+            if (kb_index < 0) kb_index = kb_total_len - 1;
+        } else if (btn == BUTTON_SELECT) {
+            char ch = get_kb_char(kb_index);
+            key_ready = 1;
+            key_value = (uint8_t)ch;
+            LOG("SELECT -> '%c'", ch);
+        }
     }
 
     draw_ui();
     rb->yield();
 }
+
+
 
     LOG("=== Apple I Emulator EXIT ===");
     return PLUGIN_OK;

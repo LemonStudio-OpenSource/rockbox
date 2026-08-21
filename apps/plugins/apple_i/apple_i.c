@@ -123,6 +123,15 @@ static int kb_index = 0, kb_total_len = 0;
 static uint8_t key_ready = 0;
 static uint8_t key_value = 0;
 
+/* Command input buffer */
+static char input_buf[64];
+static int input_len = 0;
+
+/* Program playback buffer */
+static char playback_buf[4096];
+static int playback_len = 0;
+static int playback_pos = 0;
+
 /* Terminal geometry */
 static const int TOP_OFFSET = 24;
 static const int BOTTOM_MARGIN = 2;
@@ -267,9 +276,15 @@ static void render_status(void) {
     char buf[64];
     rb->lcd_set_foreground(COLOR_STATUS);
     rb->lcd_setfont(fixed_font);
+
+    const char *mode_str = "";
+    if (playback_pos < playback_len)      mode_str = "PLY";
+    else if (cpu_halted)                mode_str = "HLT";
+    else if (rom_loaded)                mode_str = "ROM";
+    else                                mode_str = "NO ROM";
+
     rb->snprintf(buf, sizeof(buf), "PC:%04X A:%02X X:%02X Y:%02X %s",
-                 programcounter, regA, regX, regY,
-                 cpu_halted ? "HLT" : (rom_loaded ? "ROM" : "NO ROM"));
+                 programcounter, regA, regX, regY, mode_str);
     rb->lcd_puts(0, 0, buf);
     rb->lcd_puts(0, 1, "PLAY=enter  MENU=exit");
 }
@@ -395,6 +410,119 @@ static bool load_monitor(void) {
     return true;
 }
 
+
+/* ============================================================
+   Save / Restore / Program Load
+   ============================================================ */
+
+static bool save_state(void) {
+    int fd = rb->open("/apple_i_ram_data.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        LOG("SAVE failed: cannot open /apple_i_ram_data.bin");
+        return false;
+    }
+
+    /* 1) 64KB 完整内存 */
+    rb->write(fd, mem, 65536);
+
+    /* 2) CPU 状态: PC(2) A(1) X(1) Y(1) SP(1) Status(1) Version(1) */
+    uint8_t state[8];
+    state[0] = programcounter & 0xFF;
+    state[1] = (programcounter >> 8) & 0xFF;
+    state[2] = regA;
+    state[3] = regX;
+    state[4] = regY;
+    state[5] = StackPointer;
+    state[6] = Status;
+    state[7] = 0x01;  /* file format version */
+
+    rb->write(fd, state, sizeof(state));
+    rb->close(fd);
+
+    LOG("SAVE OK: PC=%04X A=%02X X=%02X Y=%02X SP=%02X S=%02X",
+        programcounter, regA, regX, regY, StackPointer, Status);
+    return true;
+}
+
+static bool restore_state(void) {
+    int fd = rb->open("/apple_i_ram_data.bin", O_RDONLY);
+    if (fd < 0) {
+        LOG("RESTORE failed: /apple_i_ram_data.bin not found");
+        return false;
+    }
+
+    size_t size = rb->filesize(fd);
+    if (size < 65536 + 8) {
+        LOG("RESTORE failed: file too small (%d bytes)", (int)size);
+        rb->close(fd);
+        return false;
+    }
+
+    rb->read(fd, mem, 65536);
+
+    uint8_t state[8];
+    rb->read(fd, state, sizeof(state));
+    rb->close(fd);
+
+    programcounter = state[0] | (state[1] << 8);
+    regA = state[2];
+    regX = state[3];
+    regY = state[4];
+    StackPointer = state[5];
+    Status = state[6];
+    /* state[7] = version, reserved for future use */
+
+    cpu_halted = false;
+
+    LOG("RESTORE OK: PC=%04X A=%02X X=%02X Y=%02X SP=%02X S=%02X",
+        programcounter, regA, regX, regY, StackPointer, Status);
+    return true;
+}
+
+static bool load_program(void) {
+    int fd = rb->open("/apple_i_program.txt", O_RDONLY);
+    if (fd < 0) {
+        LOG("PROGRAM LOAD failed: /apple_i_program.txt not found");
+        return false;
+    }
+
+    size_t size = rb->filesize(fd);
+    if (size == 0) {
+        rb->close(fd);
+        return false;
+    }
+
+    char temp[sizeof(playback_buf)];
+    if (size > sizeof(temp) - 1) {
+        size = sizeof(temp) - 1;
+        LOG("PROGRAM LOAD warning: file truncated to %d bytes", (int)size);
+    }
+    rb->read(fd, temp, size);
+    rb->close(fd);
+
+    /* Normalize line endings: \r\n / \n / \r -> single \r */
+    playback_len = 0;
+    for (size_t i = 0; i < size && playback_len < (int)sizeof(playback_buf) - 1; i++) {
+        char c = temp[i];
+        if (c == '\n') {
+            playback_buf[playback_len++] = '\r';
+        } else if (c == '\r') {
+            /* skip \r if followed by \n (CRLF); otherwise treat as CR */
+            if (i + 1 >= size || temp[i + 1] != '\n') {
+                playback_buf[playback_len++] = '\r';
+            }
+        } else {
+            playback_buf[playback_len++] = c;
+        }
+    }
+
+    playback_pos = 0;
+
+    LOG("PROGRAM LOAD OK: %d bytes queued", playback_len);
+    return true;
+}
+
+
 /* ============================================================
    Force display some test text
    ============================================================ */
@@ -490,6 +618,14 @@ enum plugin_status plugin_start(const void *parameter) {
     static int last_wheel = -1;
 
     while (1) {
+        /* Inject queued playback characters before CPU runs */
+        if (playback_pos < playback_len && !key_ready) {
+            key_ready = 1;
+            key_value = playback_buf[playback_pos++];
+            LOG("PLAYBACK inject 0x%02X '%c'", key_value,
+                (key_value >= 0x20 && key_value < 0x7F) ? key_value : '.');
+        }
+        
         if (!cpu_halted) {
             for (int i = 0; i < 500; i++) {
                 if (!m6502_step()) {
@@ -534,9 +670,38 @@ enum plugin_status plugin_start(const void *parameter) {
                 return PLUGIN_OK;        /* <--The only way out is here */
             }
             if (btn == BUTTON_PLAY) {
-                key_ready = 1;
-                key_value = '\r';
-                LOG("PLAY pressed,link to ENTER");
+                if (playback_pos < playback_len) {
+                    LOG("PLAY ignored: playback in progress");
+                } else if (input_len == 1 && input_buf[0] == 'S') {
+                    save_state();
+                    input_len = 0;
+                    key_ready = 1;
+                    key_value = '\r';
+                    LOG("SAVE command executed");
+                } else if (input_len == 1 && input_buf[0] == 'R') {
+                    restore_state();
+                    input_len = 0;
+                    key_ready = 1;
+                    key_value = '\r';
+                    LOG("RESTORE command executed");
+                } else if (input_len == 1 && input_buf[0] == 'P') {
+                    load_program();
+                    input_len = 0;
+                    /* Playback starts automatically next frame */
+                    LOG("PROGRAM LOAD command executed");
+                } else {
+                    /* Normal input: playback buffered chars + CR */
+                    if (input_len > 0) {
+                        rb->memcpy(playback_buf, input_buf, input_len);
+                        playback_buf[input_len] = '\r';
+                        playback_len = input_len + 1;
+                        playback_pos = 0;
+                        input_len = 0;
+                    } else {
+                        key_ready = 1;
+                        key_value = '\r';
+                    }
+                }
             } else if (btn == BUTTON_SCROLL_FWD) {
                 kb_index++;
                 if (kb_index >= kb_total_len) kb_index = 0;
@@ -544,10 +709,15 @@ enum plugin_status plugin_start(const void *parameter) {
                 kb_index--;
                 if (kb_index < 0) kb_index = kb_total_len - 1;
             } else if (btn == BUTTON_SELECT) {
-                char ch = get_kb_char(kb_index);
-                key_ready = 1;
-                key_value = (uint8_t)ch;
-                LOG("SELECT pressed,link to '%c'", ch);
+                if (playback_pos < playback_len) {
+                    LOG("SELECT ignored: playback in progress");
+                } else {
+                    char ch = get_kb_char(kb_index);
+                    if (input_len < (int)sizeof(input_buf) - 1) {
+                        input_buf[input_len++] = ch;
+                    }
+                    LOG("SELECT pressed, buffered '%c'", ch);
+                }
             }
         }
 

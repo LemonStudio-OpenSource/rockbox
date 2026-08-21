@@ -404,11 +404,11 @@ static void ADC_aY() {
 }
 static void ADC_I() {
     uint16_t result;
-    tempvalue = (Status & 1) + cpu_read(programcounter);
-    result = regA + tempvalue;
+    uint16_t temp = (Status & 1) + cpu_read(programcounter);
+    result = regA + temp;
     Status &= ~0b11000011;
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
     regA = result & 0xFF;
     programcounter += 1;
 }
@@ -454,7 +454,14 @@ static void ADC_X_ind() {
 }
 
 /* SBC - similar to ADC but with operand complemented */
-#define SBC_common(operand)     uint16_t result;     tempvalue = (Status & 1) + operand;     tempvalue = (tempvalue ^ 0xFF) + 1;     result = regA + tempvalue;     Status &= ~0b11000011;     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1));     Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);     regA = result & 0xFF;
+#define SBC_common(operand) \
+    uint16_t result; \
+    tempvalue = (operand ^ 0xFF) + (Status & 1); \
+    result = regA + tempvalue; \
+    Status &= ~0b11000011; \
+    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1)); \
+    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0); \
+    regA = result & 0xFF;
 
 static void SBC_a() {
     SBC_common(cpu_read(dbyte(programcounter)));
@@ -1038,7 +1045,8 @@ static void PLP() {
 static void JMP_a_ind() {
     uint16_t addr = dbyte(programcounter);
     if ((addr & 0xFF) == 0xFF) {
-        addr = (addr & 0xFF00) | cpu_read(addr & 0xFF00);
+        // 6502 硬件 bug：跨页时高字节从页首读取
+        addr = cpu_read(addr) | (cpu_read(addr & 0xFF00) << 8);
     } else {
         addr = cpu_read(addr) | (cpu_read(addr + 1) << 8);
     }
@@ -1050,7 +1058,7 @@ static void JMP_a() {
 
 /* JSR / RTS / RTI */
 static void JSR() {
-    uint16_t ret = programcounter + 1;  /* Bug Fix : Jump more than 1 */
+    uint16_t ret = programcounter + 2;  /* From +1 fixed to +2 */
     pushstack(ret >> 8);
     pushstack(ret & 0xFF);
     programcounter = dbyte(programcounter);

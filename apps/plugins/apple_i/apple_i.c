@@ -470,46 +470,53 @@ enum plugin_status plugin_start(const void *parameter) {
     cpu_halted = false;
 
     while (1) {
-    if (!cpu_halted) {
-        for (int i = 0; i < 500; i++) {
-            if (!m6502_step()) {
-                cpu_halted = true;
-                LOG("CPU HALT PC=%04X op=%02X", programcounter, mem[programcounter]);
-                break;
+        if (!cpu_halted) {
+            for (int i = 0; i < 500; i++) {
+                if (!m6502_step()) {
+                    cpu_halted = true;
+                    LOG("CPU HALT PC=%04X op=%02X", programcounter, mem[programcounter]);
+                    break;
+                }
             }
         }
+
+        /* 批量处理所有待处理的按钮事件 */
+        while ((btn = rb->button_get(false)) != 0) {
+            if (btn == BUTTON_MENU) {
+                LOG("MENU pressed, exiting");
+                LOG("=== Apple I Emulator EXIT ===");
+                return PLUGIN_OK;        /* <--The only way out is here */
+            }
+            if (btn == BUTTON_PLAY) {
+                key_ready = 1;
+                key_value = '\r';
+                LOG("PLAY -> ENTER");
+            } else if (btn == BUTTON_SCROLL_FWD) {
+                kb_index++;
+                if (kb_index >= kb_total_len) kb_index = 0;
+            } else if (btn == BUTTON_SCROLL_BACK) {
+                kb_index--;
+                if (kb_index < 0) kb_index = kb_total_len - 1;
+            } else if (btn == BUTTON_SELECT) {
+                char ch = get_kb_char(kb_index);
+                key_ready = 1;
+                key_value = (uint8_t)ch;
+                LOG("SELECT -> '%c'", ch);
+            }
+        }
+
+        draw_ui();
+        rb->yield();
     }
 
-    /* ✅ 批量处理所有待处理的按钮事件 */
-    while ((btn = rb->button_get(false)) != 0) {
-        if (btn == BUTTON_MENU) {
-            LOG("MENU pressed, exiting");
-            goto exit;  // 或设置退出标志
-        }
-        if (btn == BUTTON_PLAY) {
-            key_ready = 1;
-            key_value = '\r';
-            LOG("PLAY -> ENTER");
-        } else if (btn == BUTTON_SCROLL_FWD) {
-            kb_index++;
-            if (kb_index >= kb_total_len) kb_index = 0;
-        } else if (btn == BUTTON_SCROLL_BACK) {
-            kb_index--;
-            if (kb_index < 0) kb_index = kb_total_len - 1;
-        } else if (btn == BUTTON_SELECT) {
-            char ch = get_kb_char(kb_index);
-            key_ready = 1;
-            key_value = (uint8_t)ch;
-            LOG("SELECT -> '%c'", ch);
-        }
-    }
-
-    draw_ui();
-    rb->yield();
-}
 
 
-
-    LOG("=== Apple I Emulator EXIT ===");
-    return PLUGIN_OK;
+   /* LOG("=== Apple I Emulator EXIT ==="); */
+   /* return PLUGIN_OK; */
+   /* 
+    * This plugin only has one way to exit—pressing MENU.
+    * But the PLUGIN_OK used to end the run has already been used in the check for whether MENU is pressed,
+    * so the program can't exit through any way outside the while(1) loop.
+    * Therefore, this exit point has been abandoned. 
+    */
 }

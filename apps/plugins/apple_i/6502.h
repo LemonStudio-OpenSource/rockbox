@@ -574,7 +574,7 @@ static void ASL_A() {
     Status = (Status & ~0b10000011) | ((regA & 0x80) >> 7);
     regA <<= 1;
     set_flags(regA);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void ASL_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
@@ -614,7 +614,7 @@ static void LSR_A() {
     Status = (Status & ~0b10000011) | (regA & 1);
     regA >>= 1;
     Status = (Status & ~0b00000010) | ((regA == 0) << 1);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void LSR_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
@@ -656,7 +656,7 @@ static void ROL_A() {
     Status = (Status & ~0b10000011) | ((regA & 0x80) >> 7);
     regA = (regA << 1) | carry;
     set_flags(regA);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void ROL_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
@@ -701,7 +701,7 @@ static void ROR_A() {
     Status = (Status & ~1) | (regA & 1);
     regA = (regA >> 1) | (carry << 7);
     set_flags(regA);
-    programcounter++;
+    /* 1-byte: no PC change */
 }
 static void ROR_a() {
     uint8_t val = cpu_read(dbyte(programcounter));

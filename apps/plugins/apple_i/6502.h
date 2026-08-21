@@ -456,11 +456,11 @@ static void ADC_X_ind() {
 /* SBC - similar to ADC but with operand complemented */
 #define SBC_common(operand) \
     uint16_t result; \
-    tempvalue = (operand ^ 0xFF) + (Status & 1); \
-    result = regA + tempvalue; \
+    uint16_t temp = (operand ^ 0xFF) + (Status & 1); \
+    result = regA + temp; \
     Status &= ~0b11000011; \
     Status |= ((result & 0x80) | ((result & 0x100) >> 8) | ((result == 0) << 1)); \
-    Status |= ((((tempvalue & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0); \
+    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0); \
     regA = result & 0xFF;
 
 static void SBC_a() {

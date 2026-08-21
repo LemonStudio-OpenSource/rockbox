@@ -1050,7 +1050,7 @@ static void JMP_a() {
 
 /* JSR / RTS / RTI */
 static void JSR() {
-    uint16_t ret = programcounter + 2;
+    uint16_t ret = programcounter + 1;  /* Bug Fix : Jump more than 1 */
     pushstack(ret >> 8);
     pushstack(ret & 0xFF);
     programcounter = dbyte(programcounter);

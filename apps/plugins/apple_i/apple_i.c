@@ -494,10 +494,17 @@ static bool restore_state(void) {
     return true;
 }
 
-static bool load_program(void) {
-    int fd = rb->open("/apple_i_program.txt", O_RDONLY);
+static bool is_all_uppercase(const char *str) {
+    for (int i = 0; str[i]; i++) {
+        if (str[i] >= 'a' && str[i] <= 'z') return false;
+    }
+    return true;
+}
+
+static bool load_program_from_path(const char *path) {
+    int fd = rb->open(path, O_RDONLY);
     if (fd < 0) {
-        LOG("PROGRAM LOAD failed: /apple_i_program.txt not found");
+        LOG("PROGRAM LOAD failed: %s not found", path);
         return false;
     }
 
@@ -522,7 +529,6 @@ static bool load_program(void) {
         if (c == '\n') {
             playback_buf[playback_len++] = '\r';
         } else if (c == '\r') {
-            /* skip \r if followed by \n (CRLF); otherwise treat as CR */
             if (i + 1 >= size || temp[i + 1] != '\n') {
                 playback_buf[playback_len++] = '\r';
             }
@@ -533,8 +539,12 @@ static bool load_program(void) {
 
     playback_pos = 0;
 
-    LOG("PROGRAM LOAD OK: %d bytes queued", playback_len);
+    LOG("PROGRAM LOAD OK: %d bytes queued from %s", playback_len, path);
     return true;
+}
+
+static bool load_program(void) {
+    return load_program_from_path("/apple_i_program.txt");
 }
 
 /* ============================================================
@@ -708,18 +718,58 @@ enum plugin_status plugin_start(const void *parameter) {
                     key_ready = 1;
                     key_value = '\r';
                     LOG("RESTORE command executed");
-                } else if (input_len == 1 && input_buf[0] == 'P') {
+                                } else if (input_len == 1 && input_buf[0] == 'P') {
+                    /* 无参数 P：使用默认路径 */
                     load_program();
                     input_len = 0;
-                    /* Playback starts automatically next frame */
-                    LOG("PROGRAM LOAD command executed");
+                    LOG("PROGRAM LOAD command executed (default)");
+                } else if (input_len > 2 && input_buf[0] == 'P' && input_buf[1] == ' ') {
+                    /* 有参数 P <FILENAME> */
+                    int space_pos = 1;
+                    while (space_pos < input_len && input_buf[space_pos] == ' ') space_pos++;
+                    if (space_pos < input_len) {
+                        char path[128];
+                        rb->snprintf(path, sizeof(path), "/%s", input_buf + space_pos);
+                        load_program_from_path(path);
+                        LOG("PROGRAM LOAD command executed: %s", path);
+                    } else {
+                        load_program();
+                        LOG("PROGRAM LOAD command executed (default)");
+                    }
+                    input_len = 0;
+                } else if (input_len == 2 && input_buf[0] == 'L' && input_buf[1] == 'P') {
+                    /* LP：列出根目录下全大写的 .TXT 文件 */
+                    input_len = 0;
+                    DIR *dir = rb->opendir("/");
+                    if (dir) {
+                        struct dirent *entry;
+                        terminal_print("\r");
+                        while ((entry = rb->readdir(dir)) != NULL) {
+                            if (entry->d_name[0] == '.') continue;
+                            
+                            int name_len = rb->strlen(entry->d_name);
+                            if (name_len < 5) continue;
+                            
+                            /* 检查后缀 .txt（不区分大小写）且全文件名大写 */
+                            if (rb->strcasecmp(entry->d_name + name_len - 4, ".txt") != 0) continue;
+                            if (!is_all_uppercase(entry->d_name)) continue;
+                            
+                            terminal_print(entry->d_name);
+                            terminal_print("\r");
+                        }
+                        rb->closedir(dir);
+                        terminal_print("> ");
+                    } else {
+                        terminal_print("\rERROR: CANNOT OPEN DIR\r> ");
+                    }
+                    LOG("LP command executed");
                 } else if (input_len == 1 && input_buf[0] == 'A') {
                     input_len = 0;
                     terminal_print("\rApple I Emulator For Rockbox\rby LemonStudio\rThis is open-source software\rCommercial use prohibited\rLicense: GPLv2\r> ");
                     LOG("ABOUT command executed");
                 } else if (input_len == 1 && input_buf[0] == 'H') {
                     input_len = 0;
-                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\rRST - Reset and clear RAM\r> ");
+                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP <File name> - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\rRST - Reset and clear RAM\rLP - List all programs in root\r> ");
                     LOG("HELP command executed");
                 } else if (input_len == 3 && input_buf[0] == 'R' && input_buf[1] == 'S' && input_buf[2] == 'T') {
                     input_len = 0;

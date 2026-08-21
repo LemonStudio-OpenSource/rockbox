@@ -119,7 +119,7 @@ static bool init_font(void) {
     if (rows < 4) rows = 4;
     /* 为键盘预留 2 行 + 间距 */
     if (rows > 12) rows = 12;
-    kb_total_len = rb->strlen(keyboard_chars_row1) + rb->strlen(keyboard_chars_row2);
+    kb_total_len = sizeof(key_chars) - 1;  /* 去掉末尾 '\0' */
     LOG("Terminal: cols=%d rows=%d char_w=%d char_h=%d", cols, rows, char_w, char_h);
     return true;
 }
@@ -176,11 +176,11 @@ static void render_keyboard(void)
     for (i = 0; i < 26; i++) {
         char buf[2] = {key_chars[i], '\0'};
         if (i == kb_index) {
-            rb->lcd_set_foreground(LCD_BLACK);
-            rb->lcd_set_background(LCD_WHITE);
+            rb->lcd_set_foreground(COLOR_BG);
+            rb->lcd_set_background(COLOR_TEXT);
         } else {
-            rb->lcd_set_foreground(LCD_WHITE);
-            rb->lcd_set_background(LCD_BLACK);
+            rb->lcd_set_foreground(COLOR_TEXT);
+            rb->lcd_set_background(COLOR_BG);
         }
         rb->lcd_putsxy(start_x + i * char_w, y, buf);
     }
@@ -194,11 +194,11 @@ static void render_keyboard(void)
 
         /* 先设置颜色 */
         if (i == kb_index) {
-            rb->lcd_set_foreground(LCD_BLACK);
-            rb->lcd_set_background(LCD_WHITE);
+            rb->lcd_set_foreground(COLOR_BG);
+            rb->lcd_set_background(COLOR_TEXT);
         } else {
-            rb->lcd_set_foreground(LCD_WHITE);
-            rb->lcd_set_background(LCD_BLACK);
+            rb->lcd_set_foreground(COLOR_TEXT);
+            rb->lcd_set_background(COLOR_BG);
         }
 
         /* 空格显示为 ␣，其他正常显示 */
@@ -213,8 +213,8 @@ static void render_keyboard(void)
         start_x += w * char_w;
     }
 
-    rb->lcd_set_foreground(LCD_WHITE);
-    rb->lcd_set_background(LCD_BLACK);
+    rb->lcd_set_foreground(COLOR_TEXT);
+    rb->lcd_set_background(COLOR_BG);
     rb->lcd_update();
 }
 static void render_status(void) {

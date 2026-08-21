@@ -78,8 +78,10 @@ static bool rom_loaded = false;
 /* UI state */
 static struct font *fixed_font = NULL;
 static int char_w = 0, char_h = 0;
-static const char *keyboard_chars_row1 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-static const char *keyboard_chars_row2 = "0123456789 .:-+* /=();,";
+static const char key_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    " .:+*=();,";
 static int kb_index = 0, kb_total_len = 0;
 
 static uint8_t key_ready = 0;
@@ -115,6 +117,8 @@ static bool init_font(void) {
     rows = (SCREEN_H - TOP_OFFSET - BOTTOM_MARGIN) / char_h;
     if (rows > MAX_ROWS) rows = MAX_ROWS;
     if (rows < 4) rows = 4;
+    /* 为键盘预留 2 行 + 间距 */
+    if (rows > 12) rows = 12;
     kb_total_len = rb->strlen(keyboard_chars_row1) + rb->strlen(keyboard_chars_row2);
     LOG("Terminal: cols=%d rows=%d char_w=%d char_h=%d", cols, rows, char_w, char_h);
     return true;
@@ -162,44 +166,55 @@ static void render_terminal(void) {
     }
 }
 
-static void render_keyboard(void) {
-    int y_base = TOP_OFFSET + rows * char_h + 2;
-    int y = y_base;
-    int char_spacing = char_w + 2;
-    int len1 = rb->strlen(keyboard_chars_row1);
-    int len2 = rb->strlen(keyboard_chars_row2);
+static void render_keyboard(void)
+{
+    int i;
+    int x = 0, y = SCREEN_H - 2 * char_h - 2;  /* 键盘底部对齐 */
+    int start_x = 0;
 
-    int x_start = (SCREEN_W - len1 * char_spacing) / 2;
-    for (int i = 0; i < len1; i++) {
-        int px = x_start + i * char_spacing;
-        char ch = keyboard_chars_row1[i];
-        if (i == kb_index) {
-            rb->lcd_set_foreground(COLOR_HIGHLIGHT_BG);
-            rb->lcd_fillrect(px - 1, y - 1, char_w + 2, char_h + 2);
-            draw_char_at(px, y, ch, COLOR_BG);
+    /* 第一行：字母 A-Z */
+    for (i = 0; i < 26; i++) {
+        char buf[2] = {key_chars[i], '\0'};
+        if (i == key_idx) {
+            rb->lcd_set_foreground(LCD_BLACK);
+            rb->lcd_set_background(LCD_WHITE);
         } else {
-            draw_char_at(px, y, ch, COLOR_TEXT);
+            rb->lcd_set_foreground(LCD_WHITE);
+            rb->lcd_set_background(LCD_BLACK);
         }
+        rb->lcd_putsxy(start_x + i * char_w, y, buf);
     }
+
+    /* 第二行：数字和符号 */
     y += char_h + 2;
-    x_start = (SCREEN_W - len2 * char_spacing) / 2;
-    for (int i = 0; i < len2; i++) {
-        int idx = len1 + i;
-        int px = x_start + i * char_spacing;
-        char ch = keyboard_chars_row2[i];
-        if (idx == kb_index) {
-            rb->lcd_set_foreground(COLOR_HIGHLIGHT_BG);
-            rb->lcd_fillrect(px - 1, y - 1, char_w + 2, char_h + 2);
-            draw_char_at(px, y, ch, COLOR_BG);
+    start_x = 0;
+    for (i = 26; i < (int)sizeof(key_chars)-1; i++) {
+        char buf[5];
+        int w = 1;
+        
+        /* render_keyboard 显示时替换 */
+        if (key_chars[i] == ' ') {
+            rb->lcd_putsxy(start_x, y, "\xE2\x90\xA3");  /* ␣ */
         } else {
-            draw_char_at(px, y, ch, COLOR_TEXT);
+            char buf[2] = {key_chars[i], '\0'};
+            rb->lcd_putsxy(start_x, y, buf);
         }
-    }
-    rb->lcd_set_foreground(COLOR_LABEL);
-    rb->lcd_setfont(fixed_font);
-    rb->lcd_puts(0, 7, "KB: ");
-}
 
+        if (i == key_idx) {
+            rb->lcd_set_foreground(LCD_BLACK);
+            rb->lcd_set_background(LCD_WHITE);
+        } else {
+            rb->lcd_set_foreground(LCD_WHITE);
+            rb->lcd_set_background(LCD_BLACK);
+        }
+        rb->lcd_putsxy(start_x, y, buf);
+        start_x += w * char_w;
+    }
+
+    rb->lcd_set_foreground(LCD_WHITE);
+    rb->lcd_set_background(LCD_BLACK);
+    rb->lcd_update();
+}
 static void render_status(void) {
     char buf[64];
     rb->lcd_set_foreground(COLOR_STATUS);

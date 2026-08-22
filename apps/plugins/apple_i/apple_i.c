@@ -729,7 +729,7 @@ enum plugin_status plugin_start(const void *parameter) {
                     while (space_pos < input_len && input_buf[space_pos] == ' ') space_pos++;
                     if (space_pos < input_len) {
                         char path[128];
-                        rb->snprintf(path, sizeof(path), "/%s", input_buf + space_pos);
+                        rb->snprintf(path, sizeof(path), "/apple_i/programs/%s", input_buf + space_pos);
                         load_program_from_path(path);
                         LOG("PROGRAM LOAD command executed: %s", path);
                     } else {
@@ -765,11 +765,11 @@ enum plugin_status plugin_start(const void *parameter) {
                     LOG("LP command executed");
                 } else if (input_len == 1 && input_buf[0] == 'A') {
                     input_len = 0;
-                    terminal_print("\rApple I Emulator For Rockbox\rby LemonStudio\rThis is open-source software\rCommercial use prohibited\rLicense: GPLv2\r> ");
+                    terminal_print("\rApple I Emulator For Rockbox\rby LemonStudio\rThis is open-source software\rCommercial use prohibited\rLicense: GPLv3\r> ");
                     LOG("ABOUT command executed");
                 } else if (input_len == 1 && input_buf[0] == 'H') {
                     input_len = 0;
-                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP <File name> - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\rRST - Reset and clear RAM\rLP - List all programs in root\rCC <ABBR> - Check Character (BanG Dream!)\r> ");
+                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP <File name> - Load program from txt\rRST - Reset and clear RAM\rLP - List all programs\rCC <ABBR> - Check Character\r> ");
                     LOG("HELP command executed");
                 } else if (input_len == 3 && input_buf[0] == 'R' && input_buf[1] == 'S' && input_buf[2] == 'T') {
                     input_len = 0;

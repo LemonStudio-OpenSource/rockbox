@@ -8,7 +8,7 @@ int g_log_counter = 0;
    ============================================================ */
 #define LOG_ENABLED 1
 #if LOG_ENABLED
-#define LOG_FILE "/apple_i.log"
+#define LOG_FILE "/apple_i/log/apple_i.log"
 #define LOG_MAX_SIZE (128 * 1024)  /* 最大 128KB 日志缓冲 */
 
 static char *log_buf = NULL;
@@ -74,7 +74,7 @@ static void log_flush(void) {
 
 /*
  * Apple I Emulator - Enhanced debugging version with logging
- * Logs to /apple_i.log
+ * Logs to /apple_i/log/apple_i.log
  */
 
 static void init_input(void) {
@@ -390,9 +390,9 @@ static void mem_write(uint16_t addr, uint8_t val) {
    Load ROM
    ============================================================ */
 static bool load_rom(void) {
-    int fd = rb->open("/apple1basic.bin", O_RDONLY);
+    int fd = rb->open("/apple_i/roms/apple1basic.bin", O_RDONLY);
     if (fd < 0) {
-        LOG("ROM open failed: /apple1basic.bin not found");
+        LOG("ROM open failed: /apple_i/roms/apple1basic.bin not found");
         return false;
     }
     size_t size = rb->filesize(fd);
@@ -412,7 +412,7 @@ static bool load_rom(void) {
 }
 
 static bool load_monitor(void) {
-    int fd = rb->open("/apple1monitor.bin", O_RDONLY);
+    int fd = rb->open("/apple_i/roms/apple1monitor.bin", O_RDONLY);
     if (fd < 0) {
         LOG("Monitor ROM not found, using built-in stubs");
         return false;
@@ -431,9 +431,9 @@ static bool load_monitor(void) {
    ============================================================ */
 
 static bool save_state(void) {
-    int fd = rb->open("/apple_i_ram_data.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    int fd = rb->open("/apple_i/rams/apple_i_ram_data.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) {
-        LOG("SAVE failed: cannot open /apple_i_ram_data.bin");
+        LOG("SAVE failed: cannot open /apple_i/rams/apple_i_ram_data.bin");
         return false;
     }
 
@@ -460,9 +460,9 @@ static bool save_state(void) {
 }
 
 static bool restore_state(void) {
-    int fd = rb->open("/apple_i_ram_data.bin", O_RDONLY);
+    int fd = rb->open("/apple_i/rams/apple_i_ram_data.bin", O_RDONLY);
     if (fd < 0) {
-        LOG("RESTORE failed: /apple_i_ram_data.bin not found");
+        LOG("RESTORE failed: /apple_i/rams/apple_i_ram_data.bin not found");
         return false;
     }
 
@@ -544,7 +544,7 @@ static bool load_program_from_path(const char *path) {
 }
 
 static bool load_program(void) {
-    return load_program_from_path("/apple_i_program.txt");
+    return load_program_from_path("/apple_i/programs/apple_i_program.txt");
 }
 
 /* ============================================================
@@ -740,7 +740,7 @@ enum plugin_status plugin_start(const void *parameter) {
                 } else if (input_len == 2 && input_buf[0] == 'L' && input_buf[1] == 'P') {
                     /* LP：列出根目录下全大写的 .TXT 文件 */
                     input_len = 0;
-                    DIR *dir = rb->opendir("/");
+                    DIR *dir = rb->opendir("/apple_i/programs");
                     if (dir) {
                         struct dirent *entry;
                         terminal_print("\r");

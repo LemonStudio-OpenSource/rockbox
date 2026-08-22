@@ -769,7 +769,7 @@ enum plugin_status plugin_start(const void *parameter) {
                     LOG("ABOUT command executed");
                 } else if (input_len == 1 && input_buf[0] == 'H') {
                     input_len = 0;
-                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP <File name> - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\rRST - Reset and clear RAM\rLP - List all programs in root\r> ");
+                    terminal_print("\rA - About this emulator\rH - Help (commands)\rS - Save state to file\rR - Restore state from file\rP <File name> - Load program from txt\rPREV - Backspace key\rNEXT - Soft reset/Stop\rSELECT - Input char\rPLAY - Enter command\rSCROLL - Move cursor\rRST - Reset and clear RAM\rLP - List all programs in root\rCC <ABBR> - Check Character (BanG Dream!)\r> ");
                     LOG("HELP command executed");
                 } else if (input_len == 3 && input_buf[0] == 'R' && input_buf[1] == 'S' && input_buf[2] == 'T') {
                     input_len = 0;
@@ -790,7 +790,73 @@ enum plugin_status plugin_start(const void *parameter) {
                 } else if (input_len == 1 && input_buf[0] == 'B'){
                     input_len=0;
                     terminal_print("Yes! BanG Dream!");        /* An Easter Egg: Yes! BanG Dream! */
-                    LOG("Yes! BanG Dream!");
+                                    LOG("Yes! BanG Dream!");
+                } else if (input_len >= 2 && input_buf[0] == 'C' && input_buf[1] == 'C') {
+                    /* CC: Check Character - BanG Dream! character lookup */
+                    char abbr[32];
+                    int abbr_pos = 0;
+                    int i = 2;
+                    while (i < input_len && input_buf[i] == ' ') i++;
+                    while (i < input_len && abbr_pos < 31) {
+                        abbr[abbr_pos++] = input_buf[i++];
+                    }
+                    abbr[abbr_pos] = '\0';
+                    input_len = 0;
+
+                    const char *band = NULL;
+                    const char *name = NULL;
+
+                    if (rb->strcmp(abbr, "KSM") == 0) { band = "Poppin'Party"; name = "Toyama Kasumi"; }
+                    else if (rb->strcmp(abbr, "ARS") == 0) { band = "Poppin'Party"; name = "Ichigaya Arisa"; }
+                    else if (rb->strcmp(abbr, "SAYA") == 0) { band = "Poppin'Party"; name = "Yamabuki Saaya"; }
+                    else if (rb->strcmp(abbr, "OTAE") == 0) { band = "Poppin'Party"; name = "Hanazono Tae"; }
+                    else if (rb->strcmp(abbr, "RIMI") == 0) { band = "Poppin'Party"; name = "Ushigome Rimi"; }
+                    else if (rb->strcmp(abbr, "KKR") == 0) { band = "Hello, Happy World!"; name = "Tsurumaki Kokoro"; }
+                    else if (rb->strcmp(abbr, "MSK") == 0) { band = "Hello, Happy World!"; name = "Okusawa Misaki"; }
+                    else if (rb->strcmp(abbr, "HGM") == 0) { band = "Hello, Happy World!"; name = "Kitazawa Hagumi"; }
+                    else if (rb->strcmp(abbr, "KN") == 0) { band = "Hello, Happy World!"; name = "Matsubara Kanon"; }
+                    else if (rb->strcmp(abbr, "KOR") == 0) { band = "Hello, Happy World!"; name = "Seta Kaoru"; }
+                    else if (rb->strcmp(abbr, "MOCA") == 0) { band = "Afterglow"; name = "Aoba Moca"; }
+                    else if (rb->strcmp(abbr, "HMR") == 0) { band = "Afterglow"; name = "Uehara Himari"; }
+                    else if (rb->strcmp(abbr, "TSUGU") == 0) { band = "Afterglow"; name = "Hazawa Tsugumi"; }
+                    else if (rb->strcmp(abbr, "RAN") == 0) { band = "Afterglow"; name = "Mitake Ran"; }
+                    else if (rb->strcmp(abbr, "SOYA") == 0) { band = "Afterglow"; name = "Udagawa Tomoe"; }
+                    else if (rb->strcmp(abbr, "CST") == 0) { band = "Pastel*Palettes"; name = "Shirasagi Chisato"; }
+                    else if (rb->strcmp(abbr, "HINA") == 0) { band = "Pastel*Palettes"; name = "Hikawa Hina"; }
+                    else if (rb->strcmp(abbr, "EVE") == 0) { band = "Pastel*Palettes"; name = "Wakamiya Eve"; }
+                    else if (rb->strcmp(abbr, "MAYA") == 0) { band = "Pastel*Palettes"; name = "Yamato Maya"; }
+                    else if (rb->strcmp(abbr, "AYA") == 0) { band = "Pastel*Palettes"; name = "Maruyama Aya"; }
+                    else if (rb->strcmp(abbr, "YKN") == 0) { band = "Roselia"; name = "Minato Yukina"; }
+                    else if (rb->strcmp(abbr, "LISA") == 0) { band = "Roselia"; name = "Imai Lisa"; }
+                    else if (rb->strcmp(abbr, "RINRIN") == 0) { band = "Roselia"; name = "Shirokane Rinko"; }
+                    else if (rb->strcmp(abbr, "AKO") == 0) { band = "Roselia"; name = "Udagawa Ako"; }
+                    else if (rb->strcmp(abbr, "SAYO") == 0) { band = "Roselia"; name = "Hikawa Sayo"; }
+                    else if (rb->strcmp(abbr, "MSR") == 0) { band = "Morfonica"; name = "Kurata Mashiro"; }
+                    else if (rb->strcmp(abbr, "TOKO") == 0) { band = "Morfonica"; name = "Kirigaya Touko"; }
+                    else if (rb->strcmp(abbr, "NNM") == 0) { band = "Morfonica"; name = "Hiromachi Nanami"; }
+                    else if (rb->strcmp(abbr, "TKS") == 0) { band = "Morfonica"; name = "Futaba Tsukushi"; }
+                    else if (rb->strcmp(abbr, "RUI") == 0) { band = "Morfonica"; name = "Yashio Rui"; }
+                    else if (rb->strcmp(abbr, "CHUCHU") == 0) { band = "RAISE A SUILEN"; name = "Tamade Chiyu"; }
+                    else if (rb->strcmp(abbr, "PAREO") == 0) { band = "RAISE A SUILEN"; name = "Nyubara Reona"; }
+                    else if (rb->strcmp(abbr, "MASKING") == 0) { band = "RAISE A SUILEN"; name = "Satou Masuki"; }
+                    else if (rb->strcmp(abbr, "LAYER") == 0) { band = "RAISE A SUILEN"; name = "Wakana Rei"; }
+                    else if (rb->strcmp(abbr, "LOCK") == 0) { band = "RAISE A SUILEN"; name = "Asahi Rokka"; }
+                    else if (rb->strcmp(abbr, "ANON") == 0) { band = "MyGO!!!!!"; name = "Chihaya Anon"; }
+                    else if (rb->strcmp(abbr, "TOMO") == 0) { band = "MyGO!!!!!"; name = "Takamatsu Tomori"; }
+                    else if (rb->strcmp(abbr, "TAKI") == 0) { band = "MyGO!!!!!"; name = "Shiina Taki"; }
+                    else if (rb->strcmp(abbr, "SOYO") == 0) { band = "MyGO!!!!!"; name = "Nagasaki Soyo"; }
+                    else if (rb->strcmp(abbr, "RANA") == 0) { band = "MyGO!!!!!"; name = "Kaname Raana"; }
+                    else {
+                        terminal_print("\rUNKNOWN ABBR\r> ");
+                        LOG("CC command: unknown abbreviation '%s'", abbr);
+                    }
+
+                    if (band && name) {
+                        char outbuf[128];
+                        rb->snprintf(outbuf, sizeof(outbuf), "\r%s-%s\r> ", band, name);
+                        terminal_print(outbuf);
+                        LOG("CC command: %s -> %s-%s", abbr, band, name);
+                    }
                 } else {
                     /* Normal input: playback buffered chars + CR */
                     if (input_len > 0) {

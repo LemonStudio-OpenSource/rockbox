@@ -787,6 +787,10 @@ enum plugin_status plugin_start(const void *parameter) {
                     playback_pos = playback_len = 0;
                     terminal_print("\\ ");    /* Monitor 提示符 */
                     LOG("RST command executed, hard reset to Monitor");
+                } else if (input_len == 1 && input_buf[0] == 'B'){
+                    input_len=0;
+                    terminal_print("Yes! BanG Dream!");        /* An Easter Egg: Yes! BanG Dream! */
+                    LOG("Yes! BanG Dream!");
                 } else {
                     /* Normal input: playback buffered chars + CR */
                     if (input_len > 0) {

@@ -13,7 +13,44 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ✅ 关键改动：缓存路径改为工作目录下的相对路径
+      # 🆕 新增系统信息收集
+      - name: Get System Info
+        run: |
+          echo "=============================="
+          echo "      SYSTEM INFORMATION     "
+          echo "=============================="
+          echo ""
+          echo "--- OS Release ---"
+          cat /etc/os-release || echo "os-release not found"
+          echo ""
+          echo "--- Kernel ---"
+          uname -a
+          echo ""
+          echo "--- CPU Info ---"
+          lscpu | grep -E "Model name|Socket|Core|Thread|CPU\(s\)" || echo "lscpu failed"
+          echo ""
+          echo "--- Memory ---"
+          free -h
+          echo ""
+          echo "--- Disk Usage ---"
+          df -h / /tmp /home 2>/dev/null || df -h .
+          echo ""
+          echo "--- Network (IP) ---"
+          hostname -I || ip addr show | grep "inet " | grep -v 127.0.0.1 || echo "IP not available"
+          echo ""
+          echo "--- Runner Architecture ---"
+          uname -m
+          echo ""
+          echo "--- Load Average ---"
+          uptime
+          echo ""
+          echo "--- Disk Space (detailed) ---"
+          lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null || echo "lsblk not available"
+          echo ""
+          echo "=============================="
+          echo "   END SYSTEM INFORMATION    "
+          echo "=============================="
+
       - name: Cache Rockbox toolchain and downloads
         id: cache-toolchain
         uses: actions/cache@v4
@@ -35,14 +72,12 @@ jobs:
             libtool libtool-bin \
             autoconf automake gettext gawk m4
 
-      # ✅ 关键改动：安装到工作目录下的相对路径
       - name: Setup Rockbox toolchain (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cd tools
           ./rockboxdev.sh --target=a --prefix=$PWD/../rockbox-toolchain
 
-      # 诊断：检查工具链位置（现在在工作目录下）
       - name: Diagnose toolchain installation
         run: |
           echo "=== Contents of ./rockbox-toolchain ==="
@@ -50,7 +85,6 @@ jobs:
           echo "=== Searching for arm-elf-eabi-gcc ==="
           find ./rockbox-toolchain -name "arm-elf-eabi-gcc" -type f 2>/dev/null || echo "Not found"
 
-      # ✅ PATH 指向工作目录下的工具链
       - name: Add toolchain to PATH
         run: |
           echo "$PWD/rockbox-toolchain/bin" >> $GITHUB_PATH

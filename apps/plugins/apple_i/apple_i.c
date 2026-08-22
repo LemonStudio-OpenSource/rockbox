@@ -787,7 +787,15 @@ enum plugin_status plugin_start(const void *parameter) {
                     playback_pos = playback_len = 0;
                     terminal_print("\\ ");    /* Monitor 提示符 */
                     LOG("RST command executed, hard reset to Monitor");
-                } else if (input_len == 1 && input_buf[0] == 'B'){
+                } else if (input_len == 2 && input_buf[0] == 'E' && input_buf[1] == 'X') {
+                    terminal_print("Exiting...");
+                    LOG("EXIT BY USER COMMAND");
+                    log_flush();
+                #ifdef HAVE_WHEEL_POSITION
+                    rb->wheel_send_events(true);  // 恢复滚轮事件
+                #endif
+                    return PLUGIN_OK;
+                } else if (input_len == 1 && input_buf[0] == 'B') {
                     input_len=0;
                     terminal_print("Yes! BanG Dream!");        /* An Easter Egg: Yes! BanG Dream! */
                                     LOG("Yes! BanG Dream!");

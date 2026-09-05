@@ -56,34 +56,41 @@ static void display_lyrics(int current_line, long elapsed_ms, bool manual_mode);
 static void display_raw_text(void);
 
 /*************************** 工具函数 ***************************/
+
+/* 从字符串中提取数字，忽略前导空格 */
+static long parse_number(const char **p) {
+    while (**p && isspace(**p)) (*p)++;
+    if (!**p) return -1;
+    long val = 0;
+    while (**p >= '0' && **p <= '9') {
+        val = val * 10 + (**p - '0');
+        (*p)++;
+    }
+    return val;
+}
+
 /* 解析单个时间标签 [mm:ss.xx] 或 [mm:ss]，返回毫秒，-1 表示失败 */
 static long parse_time_tag(const char *str, const char **endptr) {
-    if (!str || str[0] != '[') return -1;
+    if (!str || *str != '[') return -1;
 
-    int min, sec, cs = 0;
-    int ret;
+    const char *p = str + 1;
+    long min = parse_number(&p);
+    if (min < 0 || *p != ':') return -1;
+    p++;
+    long sec = parse_number(&p);
+    if (sec < 0 || (*p != ']' && *p != '.')) return -1;
 
-    /* 尝试 [mm:ss.xx] */
-    ret = rb->sscanf(str, "[%d:%d.%d]", &min, &sec, &cs);
-    if (ret == 3) {
-        if (endptr) {
-            const char *close = rb->strchr(str, ']');
-            *endptr = close ? close + 1 : str + rb->strlen(str);
-        }
-        return min * 60000 + sec * 1000 + cs * 10;
+    long cs = 0;
+    if (*p == '.') {
+        p++;
+        cs = parse_number(&p);
+        if (cs < 0) return -1;
     }
 
-    /* 尝试 [mm:ss] */
-    ret = rb->sscanf(str, "[%d:%d]", &min, &sec);
-    if (ret == 2) {
-        if (endptr) {
-            const char *close = rb->strchr(str, ']');
-            *endptr = close ? close + 1 : str + rb->strlen(str);
-        }
-        return min * 60000 + sec * 1000;
-    }
+    if (*p != ']') return -1;
+    if (endptr) *endptr = p + 1;
 
-    return -1;
+    return min * 60000 + sec * 1000 + cs * 10;
 }
 
 /* 将毫秒格式化为 mm:ss（手动实现，避免 snprintf 依赖问题） */
@@ -117,7 +124,7 @@ static bool parse_lrc_text(const char *text) {
     while (*p && line_count < MAX_LRC_LINES) {
         /* 提取一行 */
         const char *eol = rb->strchr(p, '\n');
-        int len = eol ? (eol - p) : rb->strlen(p);
+        size_t len = eol ? (size_t)(eol - p) : rb->strlen(p);
         if (len >= MAX_LINE_LEN) len = MAX_LINE_LEN - 1;
         rb->strlcpy(line_buf, p, len + 1);
         p = eol ? (eol + 1) : (p + len);
@@ -157,7 +164,10 @@ static bool parse_lrc_text(const char *text) {
                     rb->strlcpy(lrc_meta.by, val, val_len + 1);
                     is_meta = true;
                 } else if (tag_len == 6 && rb->strncmp(content, "offset", 6) == 0) {
-                    rb->sscanf(val, "%ld", &time_offset);
+                    /* 手动解析数字偏移量 */
+                    const char *num = val;
+                    time_offset = parse_number(&num);
+                    if (time_offset < 0) time_offset = 0;
                     is_meta = true;
                 }
             }
@@ -210,7 +220,7 @@ static bool parse_lrc_text(const char *text) {
     const char *rp = text;
     while (*rp && line_count < MAX_LRC_LINES) {
         const char *reol = rb->strchr(rp, '\n');
-        int rlen = reol ? (reol - rp) : rb->strlen(rp);
+        size_t rlen = reol ? (size_t)(reol - rp) : rb->strlen(rp);
         if (rlen >= MAX_LINE_LEN) rlen = MAX_LINE_LEN - 1;
 
         rb->strlcpy(lrc_lines[line_count].text, rp, rlen + 1);
@@ -234,17 +244,70 @@ static bool parse_lrc_text(const char *text) {
     return false;
 }
 
-/*************************** 歌词加载 ***************************/
+/*************************** 从 ID3v2 中提取 USLT 帧 ***************************/
+
+/* 查找 ID3v2 中的 USLT 帧，返回指向文本内容的指针（静态缓冲区），若无则返回 NULL */
+static const char* find_uslt_in_id3v2(const unsigned char *buf, int len) {
+    if (!buf || len < 10) return NULL;
+
+    /* 检查头部 "ID3" */
+    if (len < 10 || rb->strncmp((const char*)buf, "ID3", 3) != 0)
+        return NULL;
+
+    /* 获取标签大小（同步安全整数） */
+    int tag_size = ((buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) |
+                   ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f);
+    if (tag_size > len - 10) tag_size = len - 10;
+
+    const unsigned char *p = buf + 10;  /* 跳过 ID3v2 头 */
+    const unsigned char *end = p + tag_size;
+
+    while (p + 10 <= end) {
+        /* 帧头：4字节ID + 4字节大小 + 2字节标志 */
+        char frame_id[5] = {0};
+        rb->strncpy(frame_id, (const char*)p, 4);
+        int frame_size = ((p[4] & 0xff) << 24) | ((p[5] & 0xff) << 16) |
+                         ((p[6] & 0xff) << 8) | (p[7] & 0xff);
+
+        if (rb->strcmp(frame_id, "USLT") == 0) {
+            /* 跳过标志（2字节） */
+            const unsigned char *data = p + 10;
+            int data_len = frame_size;
+            if (data_len > 0 && data < end) {
+                /* USLT 帧内容：语言(3) + 描述(不定) + 0x00 + 歌词文本 */
+                const unsigned char *lyrics = data + 3;   /* 跳过语言 */
+                /* 跳过描述（直到 0x00） */
+                while (lyrics < end && *lyrics != 0) lyrics++;
+                if (lyrics < end) lyrics++;  /* 跳过终止符 */
+                /* 检查是否还有文本 */
+                if (lyrics < end && *lyrics != 0) {
+                    return (const char*)lyrics;
+                }
+            }
+        }
+        p += 10 + frame_size;
+    }
+
+    return NULL;
+}
+
 static bool load_lyrics_from_id3(void) {
     struct mp3entry *id3 = rb->audio_current_track();
     if (!id3) return false;
 
-    if (id3->uslt && id3->uslt[0]) {
-        return parse_lrc_text(id3->uslt);
+    /* 尝试从 ID3v2 缓冲区中提取 USLT */
+    if (id3->id3v2buf && id3->id3v2len > 0) {
+        const char *uslt_text = find_uslt_in_id3v2((const unsigned char*)id3->id3v2buf, id3->id3v2len);
+        if (uslt_text && uslt_text[0]) {
+            return parse_lrc_text(uslt_text);
+        }
     }
+
+    /* 也可以尝试其他字段，但标准 Rockbox 没有直接 uslt，此处仅保留扩展 */
     return false;
 }
 
+/*************************** 歌词加载 ***************************/
 static bool load_lyrics_from_file(const char *audio_path) {
     if (!audio_path || !audio_path[0]) return false;
 
@@ -269,7 +332,6 @@ static bool load_lyrics_from_file(const char *audio_path) {
         return false;
     }
 
-    /* 循环读取，确保读完整个文件 */
     ssize_t total_read = 0;
     while (total_read < file_size) {
         ssize_t n = rb->read(fd, file_buffer + total_read, file_size - total_read);

@@ -243,3 +243,4 @@ test_viewports.c
 ebook.c
 metronome_pro.c
 MyFirstPlugin.c
+mylrc.c

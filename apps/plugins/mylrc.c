@@ -2,7 +2,6 @@
 #include <ctype.h>
 #include <fcntl.h>
 
-PLUGIN_HEADER
 
 /*************************** 按键映射 ***************************/
 #if CONFIG_KEYPAD == IPOD_4G_PAD

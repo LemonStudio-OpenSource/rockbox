@@ -25,8 +25,15 @@
 
 
 
-#define MAX_LINE_LEN    256
-#define LRC_BUFFER_SIZE 0x3000 /* 12 kiB */
+#define MAX_LINE_LEN    512              /* 256 -> 512 */
+/*
+ * 缓冲区策略：只用插件专用缓冲区 (rb->plugin_get_buffer())，
+ * 绝不使用音频缓冲区。总量上限 300 KiB，切分为：
+ *   - file_buffer: 最多 96 KiB，用于一次性读入整个歌词文件
+ *   - lrc_buffer : 剩余部分，用于结构体分配与换行缓存
+ */
+#define LRC_TOTAL_SIZE  (300 * 1024)     /* 300 KiB */
+#define FILE_BUF_SIZE   (96 * 1024)      /* 96 KiB */
 #if PLUGIN_BUFFER_SIZE >= 0x10000 /* no id3 support for low mem targets */
 /* define this to read lyrics in id3 tag */
 #define LRC_SUPPORT_ID3
@@ -92,6 +99,11 @@ static struct preferences prefs, old_prefs;
 static unsigned char *lrc_buffer;
 static size_t lrc_buffer_size;
 static size_t lrc_buffer_used, lrc_buffer_end;
+
+/* 文件读取缓冲区（从同一块插件缓冲区切分出来的前半段） */
+static unsigned char *file_buffer;
+static size_t file_buffer_capacity;
+
 enum extention_types {LRC, LRC8, SNC, TXT, NUM_TYPES, ID3_SYLT, ID3_USLT};
 static const char *extentions[NUM_TYPES] = {
     ".lrc", ".lrc8", ".snc", ".txt",
@@ -421,8 +433,18 @@ static struct lrc_brpos *calc_brpos(struct lrc_line *lrc_line, int i)
     struct lrc_brpos *lrc_brpos;
     struct lrc_word *lrc_word;
     int nlrcbrpos = 0, max_lrcbrpos;
+
+    /* 字体缓存：避免每次调用都做一次 font_get() 查表 */
+    static int cached_uifont = -1;
+    static struct font *cached_pf = NULL;
     uifont = rb->screens[0]->getuifont();
-    struct font* pf = rb->font_get(uifont);
+    if (uifont != cached_uifont)
+    {
+        cached_uifont = uifont;
+        cached_pf = rb->font_get(uifont);
+    }
+    struct font *pf = cached_pf;
+
     ucschar_t ch;
     struct snap {
         int count, width;
@@ -514,6 +536,10 @@ static struct lrc_brpos *calc_brpos(struct lrc_line *lrc_line, int i)
 
             int c, w;
             c = ((intptr_t)rb->utf8decode(cr.str, &ch) - (intptr_t)cr.str);
+            /* 防护：如果 utf8decode 遇到无效序列返回 0，强制前进 1 字节，
+             * 避免外层 while(1) 死循环（这是加载慢的元凶之一）。 */
+            if (c <= 0)
+                c = 1;
             if (rb->is_diacritic(ch, NULL))
                 w = 0;
             else
@@ -958,13 +984,49 @@ static bool parse_txt_line(char *line, off_t file_offset)
     return true;
 }
 
+/* UTF-16 -> UTF-8 内存转码，写入临时文件后原地替换。
+ * 保留这一行为是为了让 save_changes() 拿到的文件始终是 UTF-8。 */
+static bool convert_utf16_file(int fd, unsigned char* (*utf_decode)
+                                    (const unsigned char *, unsigned char *, int),
+                               size_t in_bom_size)
+{
+    char temp_file[MAX_PATH];
+    char outbuf[MAX_LINE_LEN*4];
+    int fe;
+    size_t readsize;
+    unsigned char inbuf[MAX_LINE_LEN*2];
+
+    rb->lseek(fd, in_bom_size, SEEK_SET);
+    rb->snprintf(temp_file, MAX_PATH, "%s~", current.lrc_file);
+    fe = rb->creat(temp_file, 0666);
+    if (fe < 0)
+        return false;
+    rb->write(fe, "\xef\xbb\xbf", 3); /* UTF-8 BOM */
+    while ((readsize = rb->read(fd, inbuf, sizeof(inbuf))) >= 2)
+    {
+        /* 2 字节对齐 */
+        readsize &= ~(size_t)1;
+        char *end = (char *)utf_decode(inbuf, (unsigned char *)outbuf,
+                                       readsize/2);
+        rb->write(fe, outbuf, end-outbuf);
+    }
+    rb->close(fe);
+    rb->close(fd);
+    rb->remove(current.lrc_file);
+    rb->rename(temp_file, current.lrc_file);
+    return true;
+}
+
 static void load_lrc_file(void)
 {
     char utf8line[MAX_LINE_LEN*3];
     int fd;
     int encoding = prefs.encoding;
     bool (*line_parser)(char *line, off_t) = NULL;
-    off_t file_offset, readsize;
+    size_t file_size;
+    unsigned char *data;
+    size_t data_size;
+    off_t base_offset;
 
     switch(current.type)
     {
@@ -987,74 +1049,129 @@ static void load_lrc_file(void)
     fd = rb->open(current.lrc_file, O_RDONLY);
     if (fd < 0) return;
 
+    /* ---------- 一次性把整个文件读进内存 ---------- */
+    file_size = (size_t)rb->filesize(fd);
+    if (file_size == 0 || file_size > file_buffer_capacity)
     {
-        /* check encoding */
-        #define BOM "\xef\xbb\xbf"
-        #define BOM_SIZE 3
-        unsigned char header[BOM_SIZE];
-        unsigned char* (*utf_decode)(const unsigned char *,
-                                     unsigned char *, int) = NULL;
-        rb->read(fd, header, BOM_SIZE);
-        if (!rb->memcmp(header, BOM, BOM_SIZE))      /* UTF-8 */
-        {
-            encoding = UTF_8;
-        }
-        else if (!rb->memcmp(header, "\xff\xfe", 2)) /* UTF-16LE */
-        {
-            utf_decode = rb->utf16LEdecode;
-        }
-        else if (!rb->memcmp(header, "\xfe\xff", 2)) /* UTF-16BE */
-        {
-            utf_decode = rb->utf16BEdecode;
-        }
-        else
-        {
-            rb->lseek(fd, 0, SEEK_SET);
-        }
+        rb->close(fd);
+        return;
+    }
+    if (rb->read(fd, file_buffer, file_size) != (ssize_t)file_size)
+    {
+        rb->close(fd);
+        return;
+    }
 
-        if (utf_decode)
+    /* ---------- 编码检测 ---------- */
+    data = file_buffer;
+    data_size = file_size;
+    base_offset = 0;
+
+    if (data_size >= 3 && !rb->memcmp(data, "\xef\xbb\xbf", 3))
+    {
+        /* UTF-8 BOM：直接跳过 */
+        encoding = UTF_8;
+        data += 3;
+        data_size -= 3;
+        base_offset = 3;
+        rb->close(fd);
+    }
+    else if (data_size >= 2 && !rb->memcmp(data, "\xff\xfe", 2))
+    {
+        /* UTF-16LE：转码到临时文件后重新读取 */
+        rb->close(fd);
+        fd = rb->open(current.lrc_file, O_RDWR);
+        if (fd < 0) return;
+        if (!convert_utf16_file(fd, rb->utf16LEdecode, 2))
+            return;
+        fd = rb->open(current.lrc_file, O_RDONLY);
+        if (fd < 0) return;
+        file_size = (size_t)rb->filesize(fd);
+        if (file_size > file_buffer_capacity) file_size = file_buffer_capacity;
+        if (rb->read(fd, file_buffer, file_size) != (ssize_t)file_size)
         {
-            /* convert encoding of file from UTF-16 to UTF-8 */
-            char temp_file[MAX_PATH];
-            int fe;
-            rb->lseek(fd, 2, SEEK_SET);
-            rb->snprintf(temp_file, MAX_PATH, "%s~", current.lrc_file);
-            fe = rb->creat(temp_file, 0666);
-            if (fe < 0)
-            {
-                rb->close(fd);
-                return;
-            }
-            rb->write(fe, BOM, BOM_SIZE);
-            while ((readsize = rb->read(fd, temp_buf, MAX_LINE_LEN)) > 0)
-            {
-                char *end = utf_decode(temp_buf, utf8line, readsize/2);
-                rb->write(fe, utf8line, end-utf8line);
-            }
-            rb->close(fe);
             rb->close(fd);
-            rb->remove(current.lrc_file);
-            rb->rename(temp_file, current.lrc_file);
-            fd = rb->open(current.lrc_file, O_RDONLY);
-            if (fd < 0) return;
-            rb->lseek(fd, BOM_SIZE, SEEK_SET); /* skip bom */
-            encoding = UTF_8;
+            return;
         }
+        rb->close(fd);
+        data = file_buffer;
+        data_size = file_size;
+        base_offset = 0;
+        if (data_size >= 3 && !rb->memcmp(data, "\xef\xbb\xbf", 3))
+        {
+            data += 3;
+            data_size -= 3;
+            base_offset = 3;
+        }
+        encoding = UTF_8;
+    }
+    else if (data_size >= 2 && !rb->memcmp(data, "\xfe\xff", 2))
+    {
+        /* UTF-16BE：同上 */
+        rb->close(fd);
+        fd = rb->open(current.lrc_file, O_RDWR);
+        if (fd < 0) return;
+        if (!convert_utf16_file(fd, rb->utf16BEdecode, 2))
+            return;
+        fd = rb->open(current.lrc_file, O_RDONLY);
+        if (fd < 0) return;
+        file_size = (size_t)rb->filesize(fd);
+        if (file_size > file_buffer_capacity) file_size = file_buffer_capacity;
+        if (rb->read(fd, file_buffer, file_size) != (ssize_t)file_size)
+        {
+            rb->close(fd);
+            return;
+        }
+        rb->close(fd);
+        data = file_buffer;
+        data_size = file_size;
+        base_offset = 0;
+        if (data_size >= 3 && !rb->memcmp(data, "\xef\xbb\xbf", 3))
+        {
+            data += 3;
+            data_size -= 3;
+            base_offset = 3;
+        }
+        encoding = UTF_8;
+    }
+    else
+    {
+        /* 无 BOM：沿用 prefs.encoding */
+        rb->close(fd);
     }
 
-    file_offset = rb->lseek(fd, 0, SEEK_CUR); /* used in line_parser */
-    while ((readsize = rb->read_line(fd, temp_buf, MAX_LINE_LEN)) > 0)
+    /* ---------- 从内存逐行解析 ---------- */
     {
-        /* note: parse_snc_line() reads temp_buf for native data. */
-        rb->iso_decode(temp_buf, utf8line, encoding, readsize+1);
-        if (!line_parser(utf8line, file_offset))
-            break;
-        file_offset += readsize;
+        const unsigned char *p = data;
+        const unsigned char *end = data + data_size;
+
+        while (p < end)
+        {
+            const unsigned char *line_end = p;
+            while (line_end < end && *line_end != '\n')
+                line_end++;
+
+            size_t line_len = line_end - p;
+            if (line_len > sizeof(temp_buf) - 1)
+                line_len = sizeof(temp_buf) - 1;
+
+            rb->memcpy(temp_buf, p, line_len);
+            temp_buf[line_len] = 0;
+
+            rb->iso_decode(temp_buf, utf8line, encoding, line_len + 1);
+
+            off_t file_offset = base_offset + (off_t)(p - data);
+
+            if (!line_parser(utf8line, file_offset))
+                break;
+
+            p = line_end;
+            if (p < end) p++;  /* 跳过 '\n' */
+        }
     }
-    rb->close(fd);
 
     current.loaded_lrc = true;
-    calc_brpos(NULL, 0);
+    calc_brpos(NULL, 0);   /* 300 KiB 缓冲区下，换行缓存全装得下 */
     init_time_tag();
 
     return;
@@ -1345,10 +1462,14 @@ static void parse_id3v2(int fd)
     char *tag, *p, utf8line[MAX_LINE_LEN*3];
     unsigned char* (*utf_decode)(const unsigned char *,
                                  unsigned char *, int) = NULL;
-    /* use middle of lrc_buffer to store tag data. */
-    if(framelen >= LRC_BUFFER_SIZE/3)
-        framelen = LRC_BUFFER_SIZE/3-1;
-    tag = lrc_buffer+LRC_BUFFER_SIZE*2/3-framelen-1;
+    /* use middle of lrc_buffer to store tag data.
+     * 上限改用运行时的 lrc_buffer_size。 */
+    {
+        long id3_limit = (long)(lrc_buffer_size / 3);
+        if (framelen >= id3_limit)
+            framelen = id3_limit - 1;
+        tag = (char *)lrc_buffer + lrc_buffer_size*2/3 - framelen - 1;
+    }
     if(global_unsynch && version <= ID3_VER_2_3)
         bytesread = read_unsynched(fd, tag, framelen, &global_ff_found);
     else
@@ -1426,8 +1547,8 @@ static void parse_id3v2(int fd)
     tag = p;
 
     while ( bytesread > 0
-        && lrc_buffer_used+bytesread < LRC_BUFFER_SIZE*2/3
-        && LRC_BUFFER_SIZE*2/3 < lrc_buffer_end)
+        && lrc_buffer_used + (size_t)bytesread < lrc_buffer_size*2/3
+        && lrc_buffer_size*2/3 < lrc_buffer_end)
     {
         bool is_crlf = false;
         struct lrc_line *lrc_line = alloc_buf(sizeof(struct lrc_line));
@@ -1439,7 +1560,7 @@ static void parse_id3v2(int fd)
             /* replace 0x0a and 0x0d with 0x00 */
             p = tag;
             while(1) {
-                utf_decode(p, tmp, 2);
+                utf_decode((unsigned char *)p, (unsigned char *)tmp, 2);
                 if(!tmp[0]) break;
                 if(tmp[0] == 0x0d || tmp[0] == 0x0a)
                 {
@@ -1454,10 +1575,10 @@ static void parse_id3v2(int fd)
         }
         if(encoding == NUM_CODEPAGES)
         {
-            unsigned char* utf8 = utf8line;
+            unsigned char* utf8 = (unsigned char *)utf8line;
             p = tag;
             do {
-                utf8 = utf_decode(p, utf8, 1);
+                utf8 = utf_decode((unsigned char *)p, utf8, 1);
                 p += 2;
             } while(*(utf8-1));
         }
@@ -1472,7 +1593,7 @@ static void parse_id3v2(int fd)
             lrc_line->time_start = bytes2int(p[0], p[1], p[2], p[3]);
             lrc_line->old_time_start = lrc_line->time_start;
             p += 4;
-            utf_decode(p, tmp, 1);
+            utf_decode((unsigned char *)p, (unsigned char *)tmp, 1);
             if(tmp[0] == 0x0a)
                 p += chsiz;
         } else { /* USLT */
@@ -2430,6 +2551,11 @@ static const char* lrc_debug_data(int selected, void * data,
             rb->snprintf(buffer, buffer_len, "too many lines? %s",
                             current.too_many_lines?"yes":"no");
             break;
+        case 6:
+            rb->snprintf(buffer, buffer_len, "file buf: %d/%d",
+                            (int)file_buffer_capacity,
+                            (int)file_buffer_capacity);
+            break;
         default:
             return NULL;
     }
@@ -2439,7 +2565,7 @@ static const char* lrc_debug_data(int selected, void * data,
 static bool lrc_debug_menu(void)
 {
     struct simplelist_info info;
-    rb->simplelist_info_init(&info, "Debug", 6, NULL);
+    rb->simplelist_info_init(&info, "Debug", 7, NULL);
     info.scroll_all = true;
     info.get_name = lrc_debug_data;
     return rb->simplelist_show_list(&info);
@@ -2812,9 +2938,30 @@ enum plugin_status plugin_start(const void* parameter)
     uifont = rb->screens[0]->getuifont();
     font_ui_height = rb->font_get(uifont)->height;
 
-    lrc_buffer = rb->plugin_get_buffer(&lrc_buffer_size);
-    lrc_buffer = ALIGN_UP(lrc_buffer, 4); /* 4 bytes aligned */
-    lrc_buffer_size = (lrc_buffer_size - 4)&~3;
+    /*
+     * 只使用插件专用缓冲区 (rb->plugin_get_buffer())，绝不使用音频缓冲区。
+     * 把这块缓冲区切分为：
+     *   [ file_buffer ][ lrc_buffer ]
+     * 前段用于一次性读入整个歌词文件，后段用于结构体分配与换行缓存。
+     */
+    {
+        unsigned char *plugin_buf = rb->plugin_get_buffer(&lrc_buffer_size);
+        plugin_buf = ALIGN_UP(plugin_buf, 4); /* 4 bytes aligned */
+        lrc_buffer_size = (lrc_buffer_size - 4) & ~3;
+
+        /* 使用上限 300 KiB（即使设备给得更多也不贪多） */
+        if (lrc_buffer_size > LRC_TOTAL_SIZE)
+            lrc_buffer_size = LRC_TOTAL_SIZE;
+
+        /* 文件读取区：最多 FILE_BUF_SIZE，且不超过总量的一半 */
+        file_buffer_capacity = FILE_BUF_SIZE;
+        if (file_buffer_capacity > lrc_buffer_size / 2)
+            file_buffer_capacity = lrc_buffer_size / 2;
+
+        file_buffer = plugin_buf;
+        lrc_buffer  = plugin_buf + file_buffer_capacity;
+        lrc_buffer_size -= file_buffer_capacity;
+    }
 
     reset_current_data();
     current.id3 = NULL;

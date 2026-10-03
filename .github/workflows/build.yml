@@ -4,6 +4,9 @@ on:
   push:
     branches: [ "master" ]
   workflow_dispatch:
+  schedule:
+    # 每天 UTC 00:00 主动跑一次，用来保活/续期工具链缓存
+    - cron: '0 0 * * *'
 
 jobs:
   build:
@@ -13,11 +16,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 🆕 新增系统信息收集
+      # ---------- 生成日期，供产物命名使用 ----------
+      - name: Get date
+        id: date
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      # ---------- 系统信息 ----------
       - name: Get System Info
         run: |
           echo "=============================="
-          echo "      SYSTEM INFORMATION     "
+          echo " SYSTEM INFORMATION "
           echo "=============================="
           echo ""
           echo "--- OS Release ---"
@@ -48,12 +56,13 @@ jobs:
           lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null || echo "lsblk not available"
           echo ""
           echo "=============================="
-          echo "   END SYSTEM INFORMATION    "
+          echo " END SYSTEM INFORMATION "
           echo "=============================="
 
-      - name: Cache Rockbox toolchain and downloads
+      # ---------- 仅恢复缓存（不触发 post 保存） ----------
+      - name: Restore Rockbox toolchain cache
         id: cache-toolchain
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ./rockbox-toolchain
@@ -62,6 +71,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rockbox-toolchain-arm-
 
+      # ---------- 缓存未命中：装依赖 ----------
       - name: Install dependencies (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
@@ -72,12 +82,14 @@ jobs:
             libtool libtool-bin \
             autoconf automake gettext gawk m4
 
+      # ---------- 缓存未命中：编译工具链 ----------
       - name: Setup Rockbox toolchain (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cd tools
           ./rockboxdev.sh --target=a --prefix=$PWD/../rockbox-toolchain
 
+      # ---------- 诊断 ----------
       - name: Diagnose toolchain installation
         run: |
           echo "=== Contents of ./rockbox-toolchain ==="
@@ -85,6 +97,19 @@ jobs:
           echo "=== Searching for arm-elf-eabi-gcc ==="
           find ./rockbox-toolchain -name "arm-elf-eabi-gcc" -type f 2>/dev/null || echo "Not found"
 
+      # ---------- 关键：工具链刚编译完就立即保存缓存 ----------
+      # 放在这里而不是依赖 actions/cache 的 post 步骤，
+      # 这样即使后面的固件编译失败，工具链也已经缓存下来。
+      - name: Save Rockbox toolchain cache (if cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ./rockbox-toolchain
+            /tmp/rbdev-dl
+          key: ${{ steps.cache-toolchain.outputs.cache-primary-key }}
+
+      # ---------- 加入 PATH 并校验 ----------
       - name: Add toolchain to PATH
         run: |
           echo "$PWD/rockbox-toolchain/bin" >> $GITHUB_PATH
@@ -93,6 +118,7 @@ jobs:
         run: |
           arm-elf-eabi-gcc --version
 
+      # ---------- 固件编译 ----------
       - name: Build firmware for iPod Color/Photo
         run: |
           export PATH="$PWD/rockbox-toolchain/bin:$PATH"
@@ -101,8 +127,9 @@ jobs:
           make -j$(nproc)
           make zip
 
+      # ---------- 上传产物，文件名带上日期 ----------
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rockbox-firmware-ipodcolor
+          name: ${{ steps.date.outputs.date }}-rockbox-ipodcolor
           path: build/rockbox.zip

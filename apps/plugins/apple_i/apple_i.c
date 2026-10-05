@@ -395,7 +395,7 @@ static bool load_rom(void) {
         LOG("ROM open failed: /apple_i/roms/apple1basic.bin not found");
         return false;
     }
-    size_t size = rb->filesize(fd);
+    size_t size = rb->ffilesize(fd);
     if (size > 0x2000) size = 0x2000;
     rb->read(fd, mem + 0xE000, size);
     rb->close(fd);
@@ -417,7 +417,7 @@ static bool load_monitor(void) {
         LOG("Monitor ROM not found, using built-in stubs");
         return false;
     }
-    size_t size = rb->filesize(fd);
+    size_t size = rb->ffilesize(fd);
     if (size > 0x100) size = 0x100;  /* Monitor is 256 bytes */
     rb->read(fd, mem + 0xFF00, size);
     rb->close(fd);
@@ -466,7 +466,7 @@ static bool restore_state(void) {
         return false;
     }
 
-    size_t size = rb->filesize(fd);
+    size_t size = rb->ffilesize(fd);
     if (size < 65536 + 8) {
         LOG("RESTORE failed: file too small (%d bytes)", (int)size);
         rb->close(fd);
@@ -508,7 +508,7 @@ static bool load_program_from_path(const char *path) {
         return false;
     }
 
-    size_t size = rb->filesize(fd);
+    size_t size = rb->ffilesize(fd);
     if (size == 0) {
         rb->close(fd);
         return false;

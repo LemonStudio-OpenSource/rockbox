@@ -142,7 +142,7 @@
 #include "iap.h"
 #endif
 
-#ifdef HIBY_LINUX
+#if defined(HIBY_LINUX) && !defined(SIMULATOR)
 #include <sys/sysinfo.h>
 #endif
 
@@ -1405,6 +1405,24 @@ static int disk_callback(int btn, struct gui_synclist *lists)
                     i_vmin[card_extract_bits(card->csd, 55, 3)],
                     i_vmax[card_extract_bits(card->csd, 52, 3)]);
             }
+#if (CONFIG_STORAGE & STORAGE_SD)
+            /*
+             * Most drivers don't read SCR so an all zero value means
+             * the driver didn't populate it. Valid SCRs will have at
+             * least the SD_BUS_WIDTHS field containing a nonzero value.
+             */
+            if (card->scr[0] || card->scr[1])
+            {
+                int scr_vers = (card->scr[1] >> 28) & 0xF;
+                simplelist_addline("SCR version: %d", scr_vers);
+
+                if (scr_vers == 0)
+                {
+                    bool supports_cmd23 = card->scr[1] & 0x2;
+                    simplelist_addline("CMD23 supported: %s", supports_cmd23 ? "yes" : "no");
+                }
+            }
+#endif
         }
         else if (card->initialized == 0)
         {
@@ -2790,7 +2808,7 @@ static bool dbg_bootflash_dump(void) {
 }
 #endif
 
-#ifdef HIBY_LINUX
+#if defined(HIBY_LINUX) && !defined(SIMULATOR)
 static bool view_ram_info(void)
 {
     struct simplelist_info info;
@@ -2839,6 +2857,59 @@ static bool view_ram_info(void)
 }
 #endif
 
+#if (CONFIG_PLATFORM & PLATFORM_NATIVE) && defined(CONFIG_NAND) \
+    && (CONFIG_NAND == NAND_RK27XX) \
+    && !(CONFIG_STORAGE & STORAGE_NAND)
+#include "ftl-probe-rk27xx.h"
+
+/* The target does not know its NAND's FTL scheme yet: show what the
+ * finder sees, for the user to report */
+static bool dbg_ftl_scheme(void)
+{
+    struct ftl_probe p;
+    struct simplelist_info info;
+
+    ftl_probe(&p);
+    simplelist_info_init(&info, "FTL scheme", 0, NULL);
+    simplelist_reset_lines();
+    simplelist_addline("Scheme: %s", ftl_probe_scheme_name(p.scheme));
+    if (p.flash_error)
+    {
+        simplelist_addline("No usable NAND (%d)", p.flash_error);
+    }
+    else
+    {
+        simplelist_addline("Chip: %lu blocks", (unsigned long)p.blocks);
+        simplelist_addline("%u planes, %u/%u sec", p.planes, p.sec_per_page,
+                           p.sec_per_block);
+        if (p.idb_boot_blocks)
+        {
+            simplelist_addline("IDB: %u blk %u+%u MB", p.idb_boot_blocks,
+                               p.idb_sys_mb, p.idb_data_mb);
+            if (p.idb_rk27)
+                simplelist_addline("IDB: RK27, ECC t=%u", p.idb_ecc_t);
+            else
+                simplelist_addline("IDB: early layout");
+        }
+        else
+            simplelist_addline("IDB: none");
+        simplelist_addline("Scanned %u blocks, t=%u", p.scanned, p.scan_ecc_t);
+        simplelist_addline("Erased %u, bad ECC %u", p.erased, p.unreadable);
+        simplelist_addline("A: %u logs, %u used", p.a_logs, p.a_blocks);
+        simplelist_addline("B: %u tables at %u", p.b_tables,
+                           p.b_tables ? p.first_b_table : 0);
+        simplelist_addline("B: %u cache, %u data", p.b_cache, p.b_data);
+        if (p.b_other)
+            simplelist_addline("B: %u other, %04x", p.b_other, p.first_b_other);
+        if (p.other)
+            simplelist_addline("Other: %u, %u %02x%02x%02x", p.other,
+                               p.first_other, p.first_other_meta[0],
+                               p.first_other_meta[1], p.first_other_meta[2]);
+    }
+    return simplelist_show_list(&info);
+}
+#endif
+
 /****** The menu *********/
 static const struct {
     unsigned char *desc; /* string or ID */
@@ -2878,7 +2949,7 @@ static const struct {
 #ifdef __linux__
         { "View CPU stats", dbg_cpuinfo },
 #endif
-#ifdef HIBY_LINUX
+#if defined(HIBY_LINUX) && !defined(SIMULATOR)
         { "View RAM info", view_ram_info },
 #endif
 #if (CONFIG_BATTERY_MEASURE != 0) && !defined(SIMULATOR)
@@ -2890,6 +2961,11 @@ static const struct {
         { "Skin Engine RAM usage", dbg_skin_engine },
 #if ((CONFIG_PLATFORM & PLATFORM_NATIVE) || defined(SONY_NWZ_LINUX) || defined(HIBY_LINUX) || defined(FIIO_M3K_LINUX)) && !defined(SIMULATOR)
         { "View HW info", dbg_hw_info },
+#endif
+#if (CONFIG_PLATFORM & PLATFORM_NATIVE) && defined(CONFIG_NAND) \
+    && (CONFIG_NAND == NAND_RK27XX) \
+    && !(CONFIG_STORAGE & STORAGE_NAND)
+        { "View FTL scheme", dbg_ftl_scheme },
 #endif
 #if (CONFIG_PLATFORM & PLATFORM_NATIVE)
         { "View partitions", dbg_partitions },

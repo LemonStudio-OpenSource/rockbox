@@ -418,7 +418,7 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define BTN_QUIT        BUTTON_START
 #define BTN_STOPRESET   BUTTON_B
 
-#elif CONFIG_KEYPAD == CTRU_PAD
+#elif CONFIG_KEYPAD == N3DS_PAD
 
 #define BTN_DIR_UP      BUTTON_UP
 #define BTN_DIR_DOWN    BUTTON_DOWN
@@ -523,7 +523,7 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define SPEED 4
 #define MAX_WORM_SEGMENTS 512
 #elif ((LCD_WIDTH == 240) && (LCD_HEIGHT == 240)) || \
-    ((LCD_WIDTH == 320) && (LCD_HEIGHT == 240)) || \
+    (((LCD_WIDTH == 320) || (LCD_WIDTH == 400)) && (LCD_HEIGHT == 240)) || \
     ((LCD_WIDTH == 240) && ((LCD_HEIGHT == 320) || (LCD_HEIGHT == 400))) || \
     ((LCD_WIDTH == 360) && ((LCD_HEIGHT == 400) || (LCD_HEIGHT == 640)))
 #define FOOD_SIZE 7

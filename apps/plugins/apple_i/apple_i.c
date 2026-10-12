@@ -120,8 +120,37 @@ static const char key_chars[] =
     ":;<=>?@[\\]^_`{|}~";           /* 53-68: 符号后半 */
 static int kb_index = 0, kb_total_len = 0;
 
-static uint8_t key_ready = 0;
-static uint8_t key_value = 0;
+/* ===== 键盘 FIFO 队列 ===== */
+#define KEY_QUEUE_SIZE 256
+static uint8_t key_queue[KEY_QUEUE_SIZE];
+static volatile int key_q_head = 0;
+static volatile int key_q_tail = 0;
+
+static inline int key_q_empty(void) {
+    return key_q_head == key_q_tail;
+}
+
+static inline int key_q_full(void) {
+    return ((key_q_tail + 1) % KEY_QUEUE_SIZE) == key_q_head;
+}
+
+static inline void key_q_push(uint8_t c) {
+    if (!key_q_full()) {
+        key_queue[key_q_tail] = c;
+        key_q_tail = (key_q_tail + 1) % KEY_QUEUE_SIZE;
+    }
+}
+
+static inline uint8_t key_q_pop(void) {
+    if (key_q_empty()) return 0;
+    uint8_t c = key_queue[key_q_head];
+    key_q_head = (key_q_head + 1) % KEY_QUEUE_SIZE;
+    return c;
+}
+
+static inline void key_q_clear(void) {
+    key_q_head = key_q_tail = 0;
+}
 
 /* Command input buffer */
 static char input_buf[1024];
@@ -351,23 +380,15 @@ void (*cpu_write)(uint16_t addr, uint8_t val) = NULL;
 
 static uint8_t mem_read(uint16_t addr) {        /* NOTICE：This Function is deprecated! Need to handle keyboard input,please use the "apple_i_cpu_read" function */
     if (addr == 0xD010) {
-        uint8_t ret = key_ready ? (key_value | 0x80) : 0;
-        if (key_ready) {
-            key_ready = 0;
-            LOG("KEY READ D010 -> 0x%02X (key_value=0x%02X)", ret, key_value);
-        } else if (g_log_counter < MAX_LOG_COUNT) {
-            LOG("READ D010 -> 0x00 (no key)");
-            g_log_counter++;
+        if (!key_q_empty()) {
+            uint8_t c = key_q_pop();
+            LOG("KEY READ D010 (mem_read) -> 0x%02X", c | 0x80);
+            return c | 0x80;
         }
-        return ret;
+        return 0x00;
     }
     if (addr == 0xD011) {
-        uint8_t ret = key_ready ? 0x80 : 0x00;
-        if (g_log_counter < MAX_LOG_COUNT) {
-            LOG("READ D011 -> 0x%02X (key_ready=%d)", ret, key_ready);
-            g_log_counter++;
-        }
-        return ret;
+        return key_q_empty() ? 0x00 : 0x80;
     }
     uint8_t val = mem[addr];
     if (g_log_counter < MAX_LOG_COUNT) {
@@ -390,24 +411,20 @@ static void mem_write(uint16_t addr, uint8_t val) {
    Load ROM
    ============================================================ */
 static bool load_rom(void) {
-    int fd = rb->open("/apple_i/roms/cz6502.bin", O_RDONLY);
+    int fd = rb->open("/apple_i/roms/AM27C256@DIP28.BIN", O_RDONLY);
     if (fd < 0) {
-        LOG("ROM open failed: /apple_i/roms/cz6502.bin not found");
+        LOG("ROM open failed: /apple_i/roms/AM27C256@DIP28.BIN not found");
         return false;
     }
-    size_t size = rb->ffilesize(fd);
-    if (size > 0x2000) size = 0x2000;
-    rb->read(fd, mem + 0xE000, size);
+    off_t pos = rb->lseek(fd, 0x0000, SEEK_SET);
+    if (pos < 0) {
+        LOG("lseek failed for Block 0");
+        rb->close(fd);
+        return false;
+    }
+    rb->read(fd, mem + 0xE000, 0x2000);
     rb->close(fd);
-    #if LOG_ENABLED
-        char hexbuf[64];
-        int pos = 0;
-        int show = size < 16 ? size : 16;
-        for (int i = 0; i < show; i++) {
-            pos += rb->snprintf(hexbuf+pos, sizeof(hexbuf)-pos, "%02X ", mem[0xE000+i]);
-        }
-        LOG("ROM loaded: %d bytes at 0xE000, first %d bytes: %s", size, show, hexbuf);
-    #endif
+    LOG("Apple BASIC (Block 0) loaded");
     return true;
 }
 
@@ -426,7 +443,7 @@ static bool load_monitor(void) {
 }
 
 /* ============================================================
-   新增：加载 Block 1 (Krusader 1.3) 和 Block 2 (MS-BASIC)
+   Block 1 (Krusader 1.3) 和 Block 2 (MS-BASIC)
    从 32KB 的 AM27C256@DIP28.BIN 中按偏移量读取
    ============================================================ */
 
@@ -437,14 +454,13 @@ static bool load_apple_basic_v2(void) {
         LOG("AM27C256@DIP28.BIN not found");
         return false;
     }
-    /* 定位到偏移 8KB，跳过 Block 0 */
     off_t pos = rb->lseek(fd, 0x2000, SEEK_SET);
     if (pos < 0) {
         LOG("lseek failed for Block 1");
         rb->close(fd);
         return false;
     }
-    rb->read(fd, mem + 0xE000, 0x2000);     /* 读取 8KB */
+    rb->read(fd, mem + 0xE000, 0x2000);
     rb->close(fd);
     LOG("Apple BASIC (Block 1, Krusader 1.3) loaded");
     return true;
@@ -457,14 +473,13 @@ static bool load_ms_basic(void) {
         LOG("AM27C256@DIP28.BIN not found");
         return false;
     }
-    /* 定位到偏移 16KB，跳过 Block 0 和 1 */
     off_t pos = rb->lseek(fd, 0x4000, SEEK_SET);
     if (pos < 0) {
         LOG("lseek failed for Block 2");
         rb->close(fd);
         return false;
     }
-    rb->read(fd, mem + 0xE000, 0x2000);     /* 读取 8KB */
+    rb->read(fd, mem + 0xE000, 0x2000);
     rb->close(fd);
     LOG("MS-BASIC (Block 2) loaded");
     return true;
@@ -623,20 +638,19 @@ static void init_video_text(void) {
 
 static uint8_t apple_i_cpu_read(uint16_t addr)
 {
-    /* 键盘数据端口 */
+    /* 键盘数据端口：从 FIFO 队列取字符 */
     if (addr == 0xD010) {
-        uint8_t ret = key_ready ? (key_value | 0x80) : 0;
-        if (key_ready) {
-            key_ready = 0;
-            LOG("KEY READ D010 -> 0x%02X (key_value=0x%02X)", ret, key_value);
+        if (!key_q_empty()) {
+            uint8_t c = key_q_pop();
+            LOG("KEY READ D010 -> 0x%02X (queue)", c | 0x80);
+            return c | 0x80;
         }
-        return ret;
+        return 0x00;
     }
 
-    /* 键盘状态端口 */
+    /* 键盘状态端口：队列有内容则返回 0x80 */
     if (addr == 0xD011) {
-        uint8_t ret = key_ready ? 0x80 : 0x00;
-        return ret;
+        return key_q_empty() ? 0x00 : 0x80;
     }
 
     /* 视频端口：强制 bit7 = 0，避免 BIT/BMI 误判 */
@@ -694,15 +708,17 @@ enum plugin_status plugin_start(const void *parameter) {
     LOG("PC forced to 0xE000 (BASIC entry)");
     cpu_halted = false;
 
+    key_q_clear();
+
     static int last_wheel = -1;
 
     while (1) {
-        /* Inject queued playback characters before CPU runs */
-        if (playback_pos < playback_len && !key_ready) {
-            key_ready = 1;
-            key_value = playback_buf[playback_pos++];
-            LOG("PLAYBACK inject 0x%02X '%c'", key_value,
-                (key_value >= 0x20 && key_value < 0x7F) ? key_value : '.');
+        /* 把 playback 缓冲区里的字符一次性灌入 FIFO 队列 */
+        while (playback_pos < playback_len && !key_q_full()) {
+            uint8_t c = playback_buf[playback_pos++];
+            key_q_push(c);
+            LOG("PLAYBACK push 0x%02X '%c'", c,
+                (c >= 0x20 && c < 0x7F) ? c : '.');
         }
         
         if (!cpu_halted) {
@@ -754,14 +770,12 @@ enum plugin_status plugin_start(const void *parameter) {
                 } else if (input_len == 1 && input_buf[0] == 'S') {
                     save_state();
                     input_len = 0;
-                    key_ready = 1;
-                    key_value = '\r';
+                    key_q_push('\r');
                     LOG("SAVE command executed");
                 } else if (input_len == 1 && input_buf[0] == 'R') {
                     restore_state();
                     input_len = 0;
-                    key_ready = 1;
-                    key_value = '\r';
+                    key_q_push('\r');
                     LOG("RESTORE command executed");
                                 } else if (input_len == 1 && input_buf[0] == 'P') {
                     /* 无参数 P：使用默认路径 */
@@ -793,12 +807,13 @@ enum plugin_status plugin_start(const void *parameter) {
                     bool is_ms = false;
                     uint16_t start_pc = 0xE000;
 
-                    if (pos == input_len || rb->strncmp(input_buf + pos, "APPLE", 5) == 0) {
-                        ok = load_rom();                     /* LOAD / LOAD APPLE -> cz6502.bin (Block 0) */
-                    } else if (rb->strncmp(input_buf + pos, "APPLE2", 6) == 0) {
-                        ok = load_apple_basic_v2();          /* LOAD APPLE2 -> AM27C256 Block 1 (Krusader 1.3) */
-                    } else if (rb->strncmp(input_buf + pos, "MS", 2) == 0) {
-                        ok = load_ms_basic();                /* LOAD MS -> AM27C256 Block 2 (MS-BASIC) */
+                    const char *arg = input_buf + pos;
+                    if (pos == input_len || rb->strcmp(arg, "APPLE") == 0) {
+                        ok = load_rom();                     /* LOAD / LOAD APPLE -> Block 0 */
+                    } else if (rb->strcmp(arg, "APPLE2") == 0) {
+                        ok = load_apple_basic_v2();          /* LOAD APPLE2 -> Block 1 (Krusader 1.3) */
+                    } else if (rb->strcmp(arg, "MS") == 0) {
+                        ok = load_ms_basic();                /* LOAD MS -> Block 2 (MS-BASIC) */
                         is_ms = true;
                         start_pc = 0xFF00;                   /* MS-BASIC 启动进 Wozmon */
                     }
@@ -811,7 +826,7 @@ enum plugin_status plugin_start(const void *parameter) {
                         m6502_reset();
                         programcounter = start_pc;
                         cpu_halted = false;
-                        key_ready = 0;
+                        key_q_clear();
                         playback_pos = playback_len = 0;
                         if (is_ms) {
                             terminal_print("\rMS-BASIC ROM LOADED\rTYPE 'E000 R' TO RUN BASIC\r> ");
@@ -869,7 +884,7 @@ enum plugin_status plugin_start(const void *parameter) {
                     m6502_reset();
                     programcounter = 0xFF00;  /* 直接跳 Monitor 入口 */
                     cpu_halted = false;
-                    key_ready = 0;
+                    key_q_clear();
                     playback_pos = playback_len = 0;
                     terminal_print("\\ ");    /* Monitor 提示符 */
                     LOG("RST command executed, hard reset to Monitor");
@@ -960,8 +975,7 @@ enum plugin_status plugin_start(const void *parameter) {
                         playback_pos = 0;
                         input_len = 0;
                     } else {
-                        key_ready = 1;
-                        key_value = '\r';
+                        key_q_push('\r');
                     }
                 }
             } else if (btn == BUTTON_SCROLL_FWD) {
@@ -976,8 +990,7 @@ enum plugin_status plugin_start(const void *parameter) {
                     LOG("PREV pressed, backspace buffered input, len=%d", input_len);
                 } else {
                     /* 缓冲为空时，发送 Apple I 退格符 '_' (0x5F) 给 ROM */
-                    key_ready = 1;
-                    key_value = '_';
+                    key_q_push('_');
                     LOG("PREV pressed, send '_' backspace to ROM");
                 }
             } else if (btn == BUTTON_RIGHT) {
@@ -989,7 +1002,7 @@ enum plugin_status plugin_start(const void *parameter) {
                     /* 软 RESET：跳转到 Monitor 入口，不清内存 */
                     programcounter = 0xFF00;
                     cpu_halted = false;
-                    key_ready = 0;
+                    key_q_clear();
                     input_len = 0;
                     LOG("NEXT pressed, soft RESET to Monitor $FF00");
                 }            

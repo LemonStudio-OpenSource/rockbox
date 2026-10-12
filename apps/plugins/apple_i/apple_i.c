@@ -55,6 +55,8 @@ static void log_message(const char *fmt, ...) {
 static void log_flush(void) {
 #if LOG_ENABLED
     if (!log_buf || log_buf_used == 0) return;
+    rb->mkdir("/apple_i");
+    rb->mkdir("/apple_i/log");
     int fd = rb->open(LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd >= 0) {
         rb->write(fd, log_buf, log_buf_used);
@@ -132,8 +134,8 @@ static inline void key_q_clear(void) { key_q_head = key_q_tail = 0; }
 static int kbd_lock_cycles = 0;
 
 /* ===== 键盘模式标志 ===== */
-/* false = Apple 模式，$D010 返回 0x80 | ASCII（真机 PA7 上拉）
-   true  = MS 模式，$D010 返回纯 ASCII（OSI/Commodore 移植版期待） */
+/* false = Apple 模式，$D010 返回 0x80 | ASCII
+   true  = MS 模式，$D010 返回纯 ASCII */
 static bool ms_basic_mode = false;
 
 /* 当前 ROM 显示名，用于状态栏 */
@@ -381,12 +383,63 @@ static bool load_apple_basic_v2(void) {
     return true;
 }
 
+/* 判断文件名是否含子串 "6502"（不区分大小写） */
+static bool name_has_6502(const char *name) {
+    int nlen = rb->strlen(name);
+    if (nlen < 4) return false;
+    for (int k = 0; k <= nlen - 4; k++) {
+        char c0 = name[k],   c1 = name[k+1], c2 = name[k+2], c3 = name[k+3];
+        if (c0 >= 'a' && c0 <= 'z') c0 -= 32;
+        if (c1 >= 'a' && c1 <= 'z') c1 -= 32;
+        if (c2 >= 'a' && c2 <= 'z') c2 -= 32;
+        if (c3 >= 'a' && c3 <= 'z') c3 -= 32;
+        if (c0 == '6' && c1 == '5' && c2 == '0' && c3 == '2') return true;
+    }
+    return false;
+}
+
 static bool load_ms_basic(void) {
-    int fd = rb->open("/apple_i/roms/cz6502.bin", O_RDONLY);
-    if (fd < 0) { LOG("cz6502.bin not found"); return false; }
+    static const char *paths[] = {
+        "/apple_i/roms/cz6502.bin",
+        "/apple_i/roms/CZ6502.BIN",
+        "/apple_i/roms/CZ6502.bin",
+        "/apple_i/roms/cz6502.BIN",
+        "/apple_i/roms/Cz6502.bin",
+    };
+    int fd = -1;
+    for (int i = 0; i < (int)(sizeof(paths) / sizeof(paths[0])); i++) {
+        fd = rb->open(paths[i], O_RDONLY);
+        if (fd >= 0) {
+            LOG("MS-BASIC opened: %s", paths[i]);
+            break;
+        }
+    }
+    if (fd < 0) {
+        LOG("cz6502.bin not found, scanning directory");
+        DIR *dir = rb->opendir("/apple_i/roms");
+        if (dir) {
+            struct dirent *entry;
+            while ((entry = rb->readdir(dir)) != NULL) {
+                if (entry->d_name[0] == '.') continue;
+                if (!name_has_6502(entry->d_name)) continue;
+                char fullpath[256];
+                rb->snprintf(fullpath, sizeof(fullpath), "/apple_i/roms/%s", entry->d_name);
+                fd = rb->open(fullpath, O_RDONLY);
+                if (fd >= 0) {
+                    LOG("MS-BASIC found via scan: %s", fullpath);
+                    break;
+                }
+            }
+            rb->closedir(dir);
+        }
+    }
+    if (fd < 0) {
+        LOG("MS-BASIC file not found anywhere");
+        return false;
+    }
     rb->read(fd, mem + 0xE000, 0x2000);
     rb->close(fd);
-    LOG("MS-BASIC (cz6502.bin) loaded");
+    LOG("MS-BASIC loaded");
     return true;
 }
 
@@ -486,7 +539,9 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
         if (!key_q_empty()) {
             uint8_t c = key_q_pop();
             kbd_lock_cycles = 200;
-            return ms_basic_mode ? c : (c | 0x80);
+            uint8_t ret = ms_basic_mode ? c : (c | 0x80);
+            LOG("KEY READ D010 -> 0x%02X (mode=%s)", ret, ms_basic_mode ? "MS" : "APPLE");
+            return ret;
         }
         return ms_basic_mode ? 0x00 : 0x80;
     }
@@ -580,6 +635,7 @@ enum plugin_status plugin_start(const void *parameter) {
             if (btn & BUTTON_REPEAT) continue;
 
             if (btn == BUTTON_MENU) {
+                LOG("=== Apple I Emulator EXIT ===");
                 log_flush();
             #ifdef HAVE_WHEEL_POSITION
                 rb->wheel_send_events(true);
@@ -644,7 +700,8 @@ enum plugin_status plugin_start(const void *parameter) {
                         key_q_clear();
                         kbd_lock_cycles = 0;
                         playback_pos = playback_len = 0;
-                        if (ms_basic_mode) {
+                        LOG("LOAD command OK: %s", arg);
+                        if (rb->strcmp(arg, "MS") == 0) {
                             terminal_print("\rMS-BASIC LOADED\r> ");
                         } else if (rb->strcmp(arg, "APPLE2") == 0) {
                             terminal_print("\rKRUSADER LOADED\r> ");
@@ -652,6 +709,7 @@ enum plugin_status plugin_start(const void *parameter) {
                             terminal_print("\rAPPLE BASIC LOADED\r> ");
                         }
                     } else {
+                        LOG("LOAD command FAILED");
                         terminal_print("\rROM NOT FOUND\r> ");
                     }
                 } else if (input_len == 2 && input_buf[0] == 'L' && input_buf[1] == 'P') {
@@ -674,12 +732,15 @@ enum plugin_status plugin_start(const void *parameter) {
                     } else {
                         terminal_print("\rERROR: CANNOT OPEN DIR\r> ");
                     }
+                    LOG("LP command executed");
                 } else if (input_len == 1 && input_buf[0] == 'A') {
                     input_len = 0;
                     terminal_print("\rApple I Emulator For Rockbox\rby LemonStudio\r> ");
+                    LOG("ABOUT command executed");
                 } else if (input_len == 1 && input_buf[0] == 'H') {
                     input_len = 0;
                     terminal_print("\rA-Help  S-Save  R-Restore  P-Program  RST-Reset  LP-List  LOAD [APPLE|APPLE2|MS]\r> ");
+                    LOG("HELP command executed");
                 } else if (input_len == 3 && input_buf[0] == 'R' && input_buf[1] == 'S' && input_buf[2] == 'T') {
                     input_len = 0;
                     rb->memset(mem, 0, 0xE000);
@@ -692,8 +753,10 @@ enum plugin_status plugin_start(const void *parameter) {
                     kbd_lock_cycles = 0;
                     playback_pos = playback_len = 0;
                     terminal_print("\\ ");
+                    LOG("RST command executed");
                 } else if (input_len == 2 && input_buf[0] == 'E' && input_buf[1] == 'X') {
                     terminal_print("Exiting...");
+                    LOG("EXIT BY USER COMMAND");
                     log_flush();
                 #ifdef HAVE_WHEEL_POSITION
                     rb->wheel_send_events(true);

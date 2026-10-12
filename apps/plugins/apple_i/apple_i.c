@@ -133,7 +133,11 @@ static inline void key_q_clear(void) { key_q_head = key_q_tail = 0; }
 /* 键盘状态锁：读完 $D010 后 $D011 在若干周期内返回 0 */
 static int kbd_lock_cycles = 0;
 
-/* 是否运行 MS-BASIC（用于状态栏显示和输入缓冲区清零） */
+/* MS-BASIC 输入缓冲地址（来自 defines_cz6502.s 和实测） */
+#define MS_LINBUF_BASE  0x13
+#define MS_LINBUF_MAX   0x1F
+
+/* 是否运行 MS-BASIC */
 static bool ms_basic_mode = false;
 
 /* 当前 ROM 显示名，用于状态栏 */
@@ -326,7 +330,7 @@ static uint8_t mem_read(uint16_t addr) {
         if (!key_q_empty()) {
             uint8_t c = key_q_pop();
             kbd_lock_cycles = 200;
-            return c | 0x80;   /* 真机 PA7 上拉高，始终带 bit7 */
+            return c | 0x80;
         }
         return 0x80;
     }
@@ -536,7 +540,7 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
         if (!key_q_empty()) {
             uint8_t c = key_q_pop();
             kbd_lock_cycles = 200;
-            uint8_t ret = c | 0x80;   /* 真机 PA7 上拉高 */
+            uint8_t ret = c | 0x80;
             LOG("KEY READ D010 -> 0x%02X", ret);
             return ret;
         }
@@ -761,9 +765,21 @@ enum plugin_status plugin_start(const void *parameter) {
                     return PLUGIN_OK;
                 } else {
                     if (input_len > 0) {
-                        /* MS 模式下，先清零输入缓冲区 $13-$1F，防止上次残留混入 */
+                        /* 【关键修复】MS-BASIC 的 GETLINE 不写 $00 终止符，
+                           导致上次输入的残留混入本行，CRUNCH 解析出错 → ?SN ERROR。
+                           这里直接写 LINBUF 并补 $00，确保 CRUNCH 只看到本行内容。 */
                         if (ms_basic_mode) {
-                            for (int i = 0x13; i <= 0x1F; i++) mem[i] = 0;
+                            int base = MS_LINBUF_BASE;
+                            for (int i = 0; i < input_len && (base + i) <= MS_LINBUF_MAX; i++) {
+                                mem[base + i] = (uint8_t)input_buf[i];
+                            }
+                            if (base + input_len <= MS_LINBUF_MAX) {
+                                mem[base + input_len] = 0x00;
+                            }
+                            for (int i = base + input_len + 1; i <= MS_LINBUF_MAX; i++) {
+                                mem[i] = 0x00;
+                            }
+                            LOG("LINBUF written: %d chars + $00", input_len);
                         }
                         rb->memcpy(playback_buf, input_buf, input_len);
                         playback_buf[input_len] = '\r';

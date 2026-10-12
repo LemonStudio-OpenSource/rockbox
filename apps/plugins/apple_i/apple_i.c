@@ -410,6 +410,8 @@ static void mem_write(uint16_t addr, uint8_t val) {
 /* ============================================================
    Load ROM
    ============================================================ */
+
+/* Block 0：原始 Apple 1 复刻软件（从 AM27C256@DIP28.BIN 偏移 0x0000） */
 static bool load_rom(void) {
     int fd = rb->open("/apple_i/roms/AM27C256@DIP28.BIN", O_RDONLY);
     if (fd < 0) {
@@ -442,12 +444,7 @@ static bool load_monitor(void) {
     return true;
 }
 
-/* ============================================================
-   Block 1 (Krusader 1.3) 和 Block 2 (MS-BASIC)
-   从 32KB 的 AM27C256@DIP28.BIN 中按偏移量读取
-   ============================================================ */
-
-/* 加载 Block 1：更新版 Apple 1 软件（含 Krusader 1.3） */
+/* Block 1：更新版 Apple 1 软件（含 Krusader 1.3），从 AM27C256@DIP28.BIN 偏移 0x2000 */
 static bool load_apple_basic_v2(void) {
     int fd = rb->open("/apple_i/roms/AM27C256@DIP28.BIN", O_RDONLY);
     if (fd < 0) {
@@ -466,22 +463,16 @@ static bool load_apple_basic_v2(void) {
     return true;
 }
 
-/* 加载 Block 2：MS-BASIC 8k + Wozmon */
+/* MS-BASIC 8K + Wozmon，从 cz6502.bin 加载 */
 static bool load_ms_basic(void) {
-    int fd = rb->open("/apple_i/roms/AM27C256@DIP28.BIN", O_RDONLY);
+    int fd = rb->open("/apple_i/roms/cz6502.bin", O_RDONLY);
     if (fd < 0) {
-        LOG("AM27C256@DIP28.BIN not found");
-        return false;
-    }
-    off_t pos = rb->lseek(fd, 0x4000, SEEK_SET);
-    if (pos < 0) {
-        LOG("lseek failed for Block 2");
-        rb->close(fd);
+        LOG("cz6502.bin not found");
         return false;
     }
     rb->read(fd, mem + 0xE000, 0x2000);
     rb->close(fd);
-    LOG("MS-BASIC (Block 2) loaded");
+    LOG("MS-BASIC (cz6502.bin) loaded");
     return true;
 }
 
@@ -804,18 +795,14 @@ enum plugin_status plugin_start(const void *parameter) {
                     while (pos < input_len && input_buf[pos] == ' ') pos++;
 
                     bool ok = false;
-                    bool is_ms = false;
-                    uint16_t start_pc = 0xE000;
-
                     const char *arg = input_buf + pos;
+
                     if (pos == input_len || rb->strcmp(arg, "APPLE") == 0) {
                         ok = load_rom();                     /* LOAD / LOAD APPLE -> Block 0 */
                     } else if (rb->strcmp(arg, "APPLE2") == 0) {
                         ok = load_apple_basic_v2();          /* LOAD APPLE2 -> Block 1 (Krusader 1.3) */
                     } else if (rb->strcmp(arg, "MS") == 0) {
-                        ok = load_ms_basic();                /* LOAD MS -> Block 2 (MS-BASIC) */
-                        is_ms = true;
-                        start_pc = 0xFF00;                   /* MS-BASIC 启动进 Wozmon */
+                        ok = load_ms_basic();                /* LOAD MS -> cz6502.bin (MS-BASIC) */
                     }
 
                     input_len = 0;
@@ -824,16 +811,12 @@ enum plugin_status plugin_start(const void *parameter) {
                         cursor_x = 0;
                         cursor_y = 0;
                         m6502_reset();
-                        programcounter = start_pc;
+                        programcounter = 0xE000;   /* 所有 BASIC 均从 0xE000 冷启动 */
                         cpu_halted = false;
                         key_q_clear();
                         playback_pos = playback_len = 0;
-                        if (is_ms) {
-                            terminal_print("\rMS-BASIC ROM LOADED\rTYPE 'E000 R' TO RUN BASIC\r> ");
-                        } else {
-                            terminal_print("\rAPPLE BASIC LOADED\r> ");
-                        }
-                        LOG("LOAD command OK: %s", is_ms ? "MS" : "APPLE");
+                        terminal_print("\rROM LOADED\r> ");
+                        LOG("LOAD command OK: %s", arg);
                     } else {
                         terminal_print("\rROM NOT FOUND\r> ");
                         LOG("LOAD command FAILED");

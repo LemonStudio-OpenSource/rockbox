@@ -541,6 +541,34 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
             kbd_lock_cycles = 200;
             uint8_t ret = ms_basic_mode ? c : (c | 0x80);
             LOG("KEY READ D010 -> 0x%02X (mode=%s)", ret, ms_basic_mode ? "MS" : "APPLE");
+
+            /* MS 模式下，读到回车时 dump 零页和输入缓冲区，帮助调试 ?SN ERROR */
+            if (ms_basic_mode && c == 0x0D) {
+                char buf[256];
+                int pos;
+
+                /* dump $0000-$003F 零页 */
+                pos = 0;
+                for (int i = 0; i < 64 && pos < 200; i++) {
+                    pos += rb->snprintf(buf + pos, sizeof(buf) - pos, "%02X ", mem[i]);
+                }
+                LOG("ZERO PAGE 00-3F: %s", buf);
+
+                /* dump $0200-$023F 输入缓冲区 */
+                pos = 0;
+                for (int i = 0; i < 64 && pos < 200; i++) {
+                    pos += rb->snprintf(buf + pos, sizeof(buf) - pos, "%02X ", mem[0x0200 + i]);
+                }
+                LOG("BUFFER 0200-023F: %s", buf);
+
+                /* dump $0040-$007F 零页后半（含可能的 TXTPTR 等） */
+                pos = 0;
+                for (int i = 0x40; i < 0x80 && pos < 200; i++) {
+                    pos += rb->snprintf(buf + pos, sizeof(buf) - pos, "%02X ", mem[i]);
+                }
+                LOG("ZERO PAGE 40-7F: %s", buf);
+            }
+
             return ret;
         }
         return ms_basic_mode ? 0x00 : 0x80;

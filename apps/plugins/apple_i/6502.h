@@ -524,12 +524,10 @@ static void INC_zpgX() {
 static void INX() {
     regX++;
     set_flags(regX);
-    /* 1-byte: no PC change */
 }
 static void INY() {
     regY++;
     set_flags(regY);
-    /* 1-byte: no PC change */
 }
 
 /* DEC */
@@ -560,12 +558,10 @@ static void DEC_zpgX() {
 static void DEX() {
     regX--;
     set_flags(regX);
-    /* 1-byte: no PC change */
 }
 static void DEY() {
     regY--;
     set_flags(regY);
-    /* 1-byte: no PC change */
 }
 
 /* ASL */
@@ -581,7 +577,6 @@ static void ASL_A() {
     Status = (Status & ~0b10000011) | ((regA & 0x80) >> 7);
     regA <<= 1;
     set_flags(regA);
-    /* 1-byte: no PC change */
 }
 static void ASL_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
@@ -621,7 +616,6 @@ static void LSR_A() {
     Status = (Status & ~0b10000011) | (regA & 1);
     regA >>= 1;
     Status = (Status & ~0b00000010) | ((regA == 0) << 1);
-    /* 1-byte: no PC change */
 }
 static void LSR_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
@@ -663,7 +657,6 @@ static void ROL_A() {
     Status = (Status & ~0b10000011) | ((regA & 0x80) >> 7);
     regA = (regA << 1) | carry;
     set_flags(regA);
-    /* 1-byte: no PC change */
 }
 static void ROL_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
@@ -708,7 +701,6 @@ static void ROR_A() {
     Status = (Status & ~1) | (regA & 1);
     regA = (regA >> 1) | (carry << 7);
     set_flags(regA);
-    /* 1-byte: no PC change */
 }
 static void ROR_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
@@ -995,57 +987,46 @@ static void BVS() {
 static void TAX() {
     regX = regA;
     set_flags(regX);
-    /* 1-byte: no PC change */
 }
 static void TXA() {
     regA = regX;
     set_flags(regA);
-    /* 1-byte: no PC change */
 }
 static void TAY() {
     regY = regA;
     set_flags(regY);
-    /* 1-byte: no PC change */
 }
 static void TYA() {
     regA = regY;
     set_flags(regA);
-    /* 1-byte: no PC change */
 }
 static void TSX() {
     regX = StackPointer;
     set_flags(regX);
-    /* 1-byte: no PC change */
 }
 static void TXS() {
     StackPointer = regX;
-    /* 1-byte: no PC change */
 }
 
 /* Stack */
 static void PHA() {
     pushstack(regA);
-    /* 1-byte: no PC change */
 }
 static void PLA() {
     regA = pullstack();
     set_flags(regA);
-    /* 1-byte: no PC change */
 }
 static void PHP() {
     pushstack(Status | 0b00110000);
-    /* 1-byte: no PC change */
 }
 static void PLP() {
     Status = pullstack() & 0b11101111;
-    /* 1-byte: no PC change */
 }
 
 /* JMP */
 static void JMP_a_ind() {
     uint16_t addr = dbyte(programcounter);
     if ((addr & 0xFF) == 0xFF) {
-        // 6502 硬件 bug：跨页时高字节从页首读取
         addr = cpu_read(addr) | (cpu_read(addr & 0xFF00) << 8);
     } else {
         addr = cpu_read(addr) | (cpu_read(addr + 1) << 8);
@@ -1058,7 +1039,7 @@ static void JMP_a() {
 
 /* JSR / RTS / RTI */
 static void JSR() {
-    uint16_t ret = programcounter + 1;  /* From +2 fixed to +1 */
+    uint16_t ret = programcounter + 1;
     pushstack(ret >> 8);
     pushstack(ret & 0xFF);
     programcounter = dbyte(programcounter);
@@ -1075,13 +1056,13 @@ static void RTI() {
 }
 
 /* Flag ops */
-static void CLC() { Status &= ~1; /* 1-byte: no PC change */ }
-static void SEC() { Status |= 1; /* 1-byte: no PC change */ }
-static void CLD() { Status &= ~0b00001000; /* 1-byte: no PC change */ }
-static void SED() { Status |= 0b00001000; /* 1-byte: no PC change */ }
-static void CLI() { Status &= ~0b00000100; /* 1-byte: no PC change */ }
-static void SEI() { Status |= 0b00000100; /* 1-byte: no PC change */ }
-static void CLV() { Status &= ~0b01000000; /* 1-byte: no PC change */ }
+static void CLC() { Status &= ~1; }
+static void SEC() { Status |= 1; }
+static void CLD() { Status &= ~0b00001000; }
+static void SED() { Status |= 0b00001000; }
+static void CLI() { Status &= ~0b00000100; }
+static void SEI() { Status |= 0b00000100; }
+static void CLV() { Status &= ~0b01000000; }
 
 /* Instruction decode table */
 static void (*instructionArr[])(void) = {
@@ -1140,17 +1121,11 @@ void m6502_reset(void) {
     regA = regX = regY = 0;
     Status = 0b00100000;
     StackPointer = 0xFD;
-    /* Read reset vector at 0xFFFC-0xFFFD */
     programcounter = dbyte(0xFFFC);
 }
 
 int m6502_step(void) {
     uint8_t opcode = cpu_read(programcounter);
-    if (g_log_counter < MAX_LOG_COUNT) {
-        LOG("STEP PC=%04X OPC=%02X A=%02X X=%02X Y=%02X SP=%02X S=%02X",
-            programcounter, opcode, regA, regX, regY, StackPointer, Status);
-        g_log_counter++;
-    }
     programcounter++;
     void (*func)(void) = instructionArr[opcode];
     if (func) {

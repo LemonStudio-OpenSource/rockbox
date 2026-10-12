@@ -133,9 +133,7 @@ static inline void key_q_clear(void) { key_q_head = key_q_tail = 0; }
 /* 键盘状态锁：读完 $D010 后 $D011 在若干周期内返回 0 */
 static int kbd_lock_cycles = 0;
 
-/* ===== 键盘模式标志 ===== */
-/* false = Apple 模式，$D010 返回 0x80 | ASCII
-   true  = MS 模式，$D010 返回纯 ASCII */
+/* 是否运行 MS-BASIC（用于状态栏显示和输入缓冲区清零） */
 static bool ms_basic_mode = false;
 
 /* 当前 ROM 显示名，用于状态栏 */
@@ -328,9 +326,9 @@ static uint8_t mem_read(uint16_t addr) {
         if (!key_q_empty()) {
             uint8_t c = key_q_pop();
             kbd_lock_cycles = 200;
-            return ms_basic_mode ? c : (c | 0x80);
+            return c | 0x80;   /* 真机 PA7 上拉高，始终带 bit7 */
         }
-        return ms_basic_mode ? 0x00 : 0x80;
+        return 0x80;
     }
     if (addr == 0xD011) {
         if (kbd_lock_cycles > 0) return 0x00;
@@ -383,7 +381,6 @@ static bool load_apple_basic_v2(void) {
     return true;
 }
 
-/* 判断文件名是否含子串 "6502"（不区分大小写） */
 static bool name_has_6502(const char *name) {
     int nlen = rb->strlen(name);
     if (nlen < 4) return false;
@@ -539,39 +536,11 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
         if (!key_q_empty()) {
             uint8_t c = key_q_pop();
             kbd_lock_cycles = 200;
-            uint8_t ret = ms_basic_mode ? c : (c | 0x80);
-            LOG("KEY READ D010 -> 0x%02X (mode=%s)", ret, ms_basic_mode ? "MS" : "APPLE");
-
-            /* MS 模式下，读到回车时 dump 零页和输入缓冲区，帮助调试 ?SN ERROR */
-            if (ms_basic_mode && c == 0x0D) {
-                char buf[256];
-                int pos;
-
-                /* dump $0000-$003F 零页 */
-                pos = 0;
-                for (int i = 0; i < 64 && pos < 200; i++) {
-                    pos += rb->snprintf(buf + pos, sizeof(buf) - pos, "%02X ", mem[i]);
-                }
-                LOG("ZERO PAGE 00-3F: %s", buf);
-
-                /* dump $0200-$023F 输入缓冲区 */
-                pos = 0;
-                for (int i = 0; i < 64 && pos < 200; i++) {
-                    pos += rb->snprintf(buf + pos, sizeof(buf) - pos, "%02X ", mem[0x0200 + i]);
-                }
-                LOG("BUFFER 0200-023F: %s", buf);
-
-                /* dump $0040-$007F 零页后半（含可能的 TXTPTR 等） */
-                pos = 0;
-                for (int i = 0x40; i < 0x80 && pos < 200; i++) {
-                    pos += rb->snprintf(buf + pos, sizeof(buf) - pos, "%02X ", mem[i]);
-                }
-                LOG("ZERO PAGE 40-7F: %s", buf);
-            }
-
+            uint8_t ret = c | 0x80;   /* 真机 PA7 上拉高 */
+            LOG("KEY READ D010 -> 0x%02X", ret);
             return ret;
         }
-        return ms_basic_mode ? 0x00 : 0x80;
+        return 0x80;
     }
     if (addr == 0xD011) {
         if (kbd_lock_cycles > 0) return 0x00;
@@ -792,6 +761,10 @@ enum plugin_status plugin_start(const void *parameter) {
                     return PLUGIN_OK;
                 } else {
                     if (input_len > 0) {
+                        /* MS 模式下，先清零输入缓冲区 $13-$1F，防止上次残留混入 */
+                        if (ms_basic_mode) {
+                            for (int i = 0x13; i <= 0x1F; i++) mem[i] = 0;
+                        }
                         rb->memcpy(playback_buf, input_buf, input_len);
                         playback_buf[input_len] = '\r';
                         playback_len = input_len + 1;

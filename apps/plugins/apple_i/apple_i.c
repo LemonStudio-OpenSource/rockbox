@@ -133,9 +133,10 @@ static inline void key_q_clear(void) { key_q_head = key_q_tail = 0; }
 /* 键盘状态锁：读完 $D010 后 $D011 在若干周期内返回 0 */
 static int kbd_lock_cycles = 0;
 
-/* MS-BASIC 输入缓冲地址（来自 defines_cz6502.s 和实测） */
-#define MS_LINBUF_BASE  0x13
-#define MS_LINBUF_MAX   0x1F
+/* MS-BASIC 输入缓冲地址（兼容 OSI 和 Apple 1 两种布局） */
+#define MS_LINBUF_BASE_OSI     0x13
+#define MS_LINBUF_BASE_APPLE   0x19
+#define MS_LINBUF_MAX          0x1F
 
 /* 是否运行 MS-BASIC */
 static bool ms_basic_mode = false;
@@ -766,20 +767,31 @@ enum plugin_status plugin_start(const void *parameter) {
                 } else {
                     if (input_len > 0) {
                         /* 【关键修复】MS-BASIC 的 GETLINE 不写 $00 终止符，
-                           导致上次输入的残留混入本行，CRUNCH 解析出错 → ?SN ERROR。
-                           这里直接写 LINBUF 并补 $00，确保 CRUNCH 只看到本行内容。 */
+                           且 ROM 可能使用 OSI 或 Apple 1 两种零页布局。
+                           这里同时写入两个地址，确保 CRUNCH 能正确解析。 */
                         if (ms_basic_mode) {
-                            int base = MS_LINBUF_BASE;
-                            for (int i = 0; i < input_len && (base + i) <= MS_LINBUF_MAX; i++) {
-                                mem[base + i] = (uint8_t)input_buf[i];
+                            int base_osi = MS_LINBUF_BASE_OSI;
+                            for (int i = 0; i < input_len && (base_osi + i) <= MS_LINBUF_MAX; i++) {
+                                mem[base_osi + i] = (uint8_t)input_buf[i];
                             }
-                            if (base + input_len <= MS_LINBUF_MAX) {
-                                mem[base + input_len] = 0x00;
+                            if (base_osi + input_len <= MS_LINBUF_MAX) {
+                                mem[base_osi + input_len] = 0x00;
                             }
-                            for (int i = base + input_len + 1; i <= MS_LINBUF_MAX; i++) {
+                            for (int i = base_osi + input_len + 1; i <= MS_LINBUF_MAX; i++) {
                                 mem[i] = 0x00;
                             }
-                            LOG("LINBUF written: %d chars + $00", input_len);
+
+                            int base_apple = MS_LINBUF_BASE_APPLE;
+                            for (int i = 0; i < input_len && (base_apple + i) <= MS_LINBUF_MAX; i++) {
+                                mem[base_apple + i] = (uint8_t)input_buf[i];
+                            }
+                            if (base_apple + input_len <= MS_LINBUF_MAX) {
+                                mem[base_apple + input_len] = 0x00;
+                            }
+                            for (int i = base_apple + input_len + 1; i <= MS_LINBUF_MAX; i++) {
+                                mem[i] = 0x00;
+                            }
+                            LOG("LINBUF written both $13 and $19: %d chars", input_len);
                         }
                         rb->memcpy(playback_buf, input_buf, input_len);
                         playback_buf[input_len] = '\r';

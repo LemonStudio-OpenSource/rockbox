@@ -20,6 +20,12 @@
                        | SAMPR_CAP_48 | SAMPR_CAP_24 | SAMPR_CAP_12 \
                        | SAMPR_CAP_32 | SAMPR_CAP_16 | SAMPR_CAP_8)
 
+/* Line gain, used for the FM radio, in 0.01 dB: start at the +12 dB the
+ * radio is heard at when not recording (wm8751.c), so recording it is as
+ * loud as listening to it */
+#define DEFAULT_REC_LEFT_GAIN   1200
+#define DEFAULT_REC_RIGHT_GAIN  1200
+
 /* define this if you have a colour LCD */
 #define HAVE_LCD_COLOR
 
@@ -94,13 +100,15 @@
 #define CONFIG_LCD LCD_SPFD5420A
 
 /* Wolfson WM8750 on I2C, headphones on its OUT2. The codec is the I2S
- * slave: the rk27xx drives the bus and clocks the codec from its codec PLL
- * at 256 fs for every rate (pcm-rk27xx.c), so the codec's CLOCKING register
- * is its normal-mode 256 fs setting throughout. The original firmware runs
- * the codec as master off a fixed 12 MHz instead, in USB mode, which puts
+ * master, driving BCLK and both of its LRCKs: as a slave it frames the ADC
+ * on its ADCLRC input, which the rk27xx's one LRCK does not reach, and
+ * records zeros. Its MCLK comes from the rk27xx's codec PLL at 256 fs for
+ * every rate (pcm-rk27xx.c), so the codec's CLOCKING register is its
+ * normal-mode 256 fs setting throughout. The original firmware runs the
+ * codec as master off a fixed 12 MHz instead, in USB mode, which puts
  * 44.1 kHz at 44.118. */
 #define HAVE_WM8750
-#define CODEC_SLAVE
+#define RK27XX_I2S_MCLK
 #define CODEC_SRCTRL_11025HZ 0
 #define CODEC_SRCTRL_22050HZ 0
 #define CODEC_SRCTRL_44100HZ 0

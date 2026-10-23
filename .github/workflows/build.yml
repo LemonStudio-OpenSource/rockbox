@@ -9,57 +9,20 @@ on:
     - cron: '0 0 * * *'
 
 jobs:
-  build:
+  # ============================================================
+  # Job 1: iPod Color/Photo (target=20)
+  # ============================================================
+  build-ipodcolor:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ---------- 生成日期，供产物命名使用 ----------
       - name: Get date
         id: date
         run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
-      # ---------- 系统信息 ----------
-      - name: Get System Info
-        run: |
-          echo "=============================="
-          echo " SYSTEM INFORMATION "
-          echo "=============================="
-          echo ""
-          echo "--- OS Release ---"
-          cat /etc/os-release || echo "os-release not found"
-          echo ""
-          echo "--- Kernel ---"
-          uname -a
-          echo ""
-          echo "--- CPU Info ---"
-          lscpu | grep -E "Model name|Socket|Core|Thread|CPU\(s\)" || echo "lscpu failed"
-          echo ""
-          echo "--- Memory ---"
-          free -h
-          echo ""
-          echo "--- Disk Usage ---"
-          df -h / /tmp /home 2>/dev/null || df -h .
-          echo ""
-          echo "--- Network (IP) ---"
-          hostname -I || ip addr show | grep "inet " | grep -v 127.0.0.1 || echo "IP not available"
-          echo ""
-          echo "--- Runner Architecture ---"
-          uname -m
-          echo ""
-          echo "--- Load Average ---"
-          uptime
-          echo ""
-          echo "--- Disk Space (detailed) ---"
-          lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null || echo "lsblk not available"
-          echo ""
-          echo "=============================="
-          echo " END SYSTEM INFORMATION "
-          echo "=============================="
-
-      # ---------- 仅恢复缓存（不触发 post 保存） ----------
       - name: Restore Rockbox toolchain cache
         id: cache-toolchain
         uses: actions/cache/restore@v4
@@ -71,7 +34,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rockbox-toolchain-arm-
 
-      # ---------- 缓存未命中：装依赖 ----------
       - name: Install dependencies (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
@@ -82,26 +44,15 @@ jobs:
             libtool libtool-bin \
             autoconf automake gettext gawk m4
 
-      # ---------- 缓存未命中：编译工具链 ----------
       - name: Setup Rockbox toolchain (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cd tools
           ./rockboxdev.sh --target=a --prefix=$PWD/../rockbox-toolchain
 
-      # ---------- 诊断 ----------
-      - name: Diagnose toolchain installation
-        run: |
-          echo "=== Contents of ./rockbox-toolchain ==="
-          ls -la ./rockbox-toolchain || echo "Not found in ./"
-          echo "=== Searching for arm-elf-eabi-gcc ==="
-          find ./rockbox-toolchain -name "arm-elf-eabi-gcc" -type f 2>/dev/null || echo "Not found"
-
-      # ---------- 关键：工具链刚编译完就立即保存缓存 ----------
-      # 放在这里而不是依赖 actions/cache 的 post 步骤，
-      # 这样即使后面的固件编译失败，工具链也已经缓存下来。
       - name: Save Rockbox toolchain cache (if cache miss)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: |
@@ -109,16 +60,12 @@ jobs:
             /tmp/rbdev-dl
           key: ${{ steps.cache-toolchain.outputs.cache-primary-key }}
 
-      # ---------- 加入 PATH 并校验 ----------
       - name: Add toolchain to PATH
-        run: |
-          echo "$PWD/rockbox-toolchain/bin" >> $GITHUB_PATH
+        run: echo "$PWD/rockbox-toolchain/bin" >> $GITHUB_PATH
 
       - name: Verify toolchain
-        run: |
-          arm-elf-eabi-gcc --version
+        run: arm-elf-eabi-gcc --version
 
-      # ---------- 固件编译 ----------
       - name: Build firmware for iPod Color/Photo
         run: |
           export PATH="$PWD/rockbox-toolchain/bin:$PATH"
@@ -127,9 +74,150 @@ jobs:
           make -j$(nproc)
           make zip
 
-      # ---------- 上传产物，文件名带上日期 ----------
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.date.outputs.date }}-rockbox-ipodcolor
+          path: build/rockbox.zip
+
+  # ============================================================
+  # Job 2: iPod Video (target=22)
+  # ============================================================
+  build-ipodvideo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get date
+        id: date
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Rockbox toolchain cache
+        id: cache-toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ./rockbox-toolchain
+            /tmp/rbdev-dl
+          key: ${{ runner.os }}-rockbox-toolchain-arm-${{ hashFiles('tools/rockboxdev.sh', 'tools/toolchain-patches/*') }}
+          restore-keys: |
+            ${{ runner.os }}-rockbox-toolchain-arm-
+
+      - name: Install dependencies (if cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            flex bison perl texinfo \
+            libtool libtool-bin \
+            autoconf automake gettext gawk m4
+
+      - name: Setup Rockbox toolchain (if cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          cd tools
+          ./rockboxdev.sh --target=a --prefix=$PWD/../rockbox-toolchain
+
+      - name: Save Rockbox toolchain cache (if cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ./rockbox-toolchain
+            /tmp/rbdev-dl
+          key: ${{ steps.cache-toolchain.outputs.cache-primary-key }}
+
+      - name: Add toolchain to PATH
+        run: echo "$PWD/rockbox-toolchain/bin" >> $GITHUB_PATH
+
+      - name: Verify toolchain
+        run: arm-elf-eabi-gcc --version
+
+      - name: Build firmware for iPod Video
+        run: |
+          export PATH="$PWD/rockbox-toolchain/bin:$PATH"
+          mkdir -p build && cd build
+          ../tools/configure --target=22
+          make -j$(nproc)
+          make zip
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.date.outputs.date }}-rockbox-ipodvideo
+          path: build/rockbox.zip
+
+  # ============================================================
+  # Job 3: iPod Classic (target=29)
+  # ============================================================
+  build-ipodclassic:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get date
+        id: date
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Rockbox toolchain cache
+        id: cache-toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ./rockbox-toolchain
+            /tmp/rbdev-dl
+          key: ${{ runner.os }}-rockbox-toolchain-arm-${{ hashFiles('tools/rockboxdev.sh', 'tools/toolchain-patches/*') }}
+          restore-keys: |
+            ${{ runner.os }}-rockbox-toolchain-arm-
+
+      - name: Install dependencies (if cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            flex bison perl texinfo \
+            libtool libtool-bin \
+            autoconf automake gettext gawk m4
+
+      - name: Setup Rockbox toolchain (if cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          cd tools
+          ./rockboxdev.sh --target=a --prefix=$PWD/../rockbox-toolchain
+
+      - name: Save Rockbox toolchain cache (if cache miss)
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ./rockbox-toolchain
+            /tmp/rbdev-dl
+          key: ${{ steps.cache-toolchain.outputs.cache-primary-key }}
+
+      - name: Add toolchain to PATH
+        run: echo "$PWD/rockbox-toolchain/bin" >> $GITHUB_PATH
+
+      - name: Verify toolchain
+        run: arm-elf-eabi-gcc --version
+
+      - name: Build firmware for iPod Classic
+        run: |
+          export PATH="$PWD/rockbox-toolchain/bin:$PATH"
+          mkdir -p build && cd build
+          ../tools/configure --target=29
+          make -j$(nproc)
+          make zip
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.date.outputs.date }}-rockbox-ipodclassic
           path: build/rockbox.zip

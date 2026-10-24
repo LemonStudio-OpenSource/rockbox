@@ -1,11 +1,12 @@
 /***************************************************************************
  *             ebook.c - 电子书阅读器 (iPod Color / Video / Classic)
- *  版本：8.7 章节扫描 + MD5 缓存 + 目录跳转
+ *  版本：8.8 滚轮改用 wheel_status 轮询，支持快速滚动一次多步
  *  功能：文件浏览、UTF-8 渲染、夜间模式、5个书签、精确翻页、偏移量缓存、
  *        章节扫描（首次扫描写入缓存，MD5 校验后复用）、目录列表/数字输入跳转
  *  内存：缓存 41 页偏移量 + 静态章节数组（200 章 × 32B）+ 章节缓存文件
  *  按键：左/右键翻页，MENU 主菜单，PLAY 快速书签
  *  目录：SELECT 切换列表/数字模式，PLAY 跳转，MENU 返回
+ *  滚轮：基于 wheel_status 绝对位置轮询，快速滚动一次多步
  *  日志：/ebook/logs/yyyy-mm-dd-hh-mm-ss.txt
  *  开屏：根据机型显示 "Lemon E-Book / For XXX / Ver.0.9Beta"，像素居中
  ***************************************************************************/
@@ -646,13 +647,11 @@ static void go_prev_page(void)
 
 /* ---------- 章节扫描 ---------- */
 
-/* 判断一行是否是章节标题候选 */
 static int match_chapter_line(const char *line, int len,
                               char *title, size_t title_size, int *num_out)
 {
     if (len <= 0 || len > 60) return 0;
 
-    /* 行尾不能是句读 */
     unsigned char last = (unsigned char)line[len - 1];
     if (last == '.' || last == '!' || last == '?' || last == ';' || last == ',') return 0;
     if (len >= 3) {
@@ -664,7 +663,6 @@ static int match_chapter_line(const char *line, int len,
 
     int evidence_pos = -1, evidence_len = 0, num = -1;
 
-    /* 中文序号：行内任意位置 "第<数字>章/回/节/卷/话/篇" */
     {
         const char *p = line;
         const char *end = line + len;
@@ -732,7 +730,6 @@ static int match_chapter_line(const char *line, int len,
         }
     }
 
-    /* 英文序号：行内任意位置 "CHAPTER N" */
     if (evidence_pos < 0) {
         const char *p = line;
         const char *end = line + len;
@@ -764,7 +761,6 @@ static int match_chapter_line(const char *line, int len,
 
     if (evidence_pos < 0) return 0;
 
-    /* 引用模式排除：证据后紧跟逗号，且逗号后还有 >10 字节文本 */
     const char *after = line + evidence_pos + evidence_len;
     const char *line_end = line + len;
     while (after < line_end && (*after == ' ' || *after == '\t')) after++;
@@ -865,7 +861,6 @@ static void jump_to_chapter(int idx)
 
 /* ---------- MD5 与章节缓存 ---------- */
 
-/* 计算当前文件的 MD5，返回 0 成功，-1 失败 */
 static int compute_file_md5(char *hex_out, size_t hex_size)
 {
     if (hex_size < MD5_STRING_LENGTH + 1) return -1;
@@ -889,7 +884,6 @@ static int compute_file_md5(char *hex_out, size_t hex_size)
     return 0;
 }
 
-/* 读取章节缓存并校验 MD5，成功返回 true */
 static bool load_chapter_cache(const char *cache_path, const char *expected_md5)
 {
     int fd = rb->open(cache_path, O_RDONLY);
@@ -904,7 +898,6 @@ static bool load_chapter_cache(const char *cache_path, const char *expected_md5)
     if (bytes <= 0) return false;
     buf[bytes] = '\0';
 
-    /* 校验 MD5 */
     char *md5_line = rb->strstr(buf, "MD5=");
     if (!md5_line) return false;
     md5_line += 4;
@@ -913,7 +906,6 @@ static bool load_chapter_cache(const char *cache_path, const char *expected_md5)
         return false;
     }
 
-    /* 解析章节行 */
     chapter_count = 0;
     char *p = buf;
     while (p && *p && chapter_count < MAX_CHAPTERS) {
@@ -924,7 +916,6 @@ static bool load_chapter_cache(const char *cache_path, const char *expected_md5)
 
         if (*line < '0' || *line > '9') continue;
 
-        /* 手动解析 "idx|offset|title" */
         char *sep1 = rb->strchr(line, '|');
         if (!sep1) continue;
         char *sep2 = rb->strchr(sep1 + 1, '|');
@@ -953,7 +944,6 @@ static bool load_chapter_cache(const char *cache_path, const char *expected_md5)
     return chapter_count > 0;
 }
 
-/* 写入章节缓存 */
 static void save_chapter_cache(const char *cache_path, const char *md5_hex)
 {
     rb->mkdir("/ebook/config");
@@ -986,7 +976,6 @@ static void save_chapter_cache(const char *cache_path, const char *md5_hex)
     LOG_INFO("Chapter cache saved: %d chapters, md5=%s", chapter_count, md5_hex);
 }
 
-/* 加载或扫描章节：MD5 一致则读缓存，否则扫描并写缓存 */
 static void load_or_scan_chapters(void)
 {
     char base[MAX_PATH];
@@ -1186,6 +1175,7 @@ static int toc_func(void *arg)
 
     int mode = 0;       /* 0=列表 1=数字输入 */
     int button;
+    int last_wheel = -1;    /* 滚轮上次绝对位置 */
 
     char input[8] = "";
     int cursor_pos = 0;
@@ -1228,17 +1218,44 @@ static int toc_func(void *arg)
             rb->lcd_puts(0, lines_per_screen - 1, (const unsigned char *)"[PLAY]跳转 [MENU]返回");
             rb->lcd_update();
 
-            button = rb->button_get_w_tmo(HZ/2);
-            if (button == BUTTON_SCROLL_BACK || button == BUTTON_LEFT) {
+            button = rb->button_get_w_tmo(HZ/10);
+
+#ifdef HAVE_WHEEL_POSITION
+            /* 主动轮询滚轮绝对位置，快速滚动一次多步 */
+            {
+                int wheel = rb->wheel_status();
+                if (wheel >= 0 && last_wheel >= 0) {
+                    int delta = wheel - last_wheel;
+                    if (delta < -48) delta += 96;
+                    else if (delta > 48) delta -= 96;
+                    if (delta >= 2 || delta <= -2) {
+                        int step = delta / 2;
+                        selected += step;
+                        if (selected < 0) selected = chapter_count - 1;
+                        if (selected >= chapter_count) selected = 0;
+                        LOG_INFO("TOC wheel delta=%d step=%d selected=%d", delta, step, selected);
+                    }
+                }
+                last_wheel = wheel;
+            }
+#endif
+
+#ifdef HAVE_WHEEL_POSITION
+            if (button == BUTTON_SCROLL_BACK || button == BUTTON_SCROLL_FWD) {
+                /* 已由 wheel_status 处理，忽略 */
+            } else
+#endif
+            if (button == BUTTON_LEFT) {
                 if (selected > 0) selected--;
                 else selected = chapter_count - 1;
-            } else if (button == BUTTON_SCROLL_FWD || button == BUTTON_RIGHT) {
+            } else if (button == BUTTON_RIGHT) {
                 if (selected < chapter_count - 1) selected++;
                 else selected = 0;
             } else if (button == BUTTON_SELECT) {
                 mode = 1;
                 input[0] = '\0';
                 cursor_pos = 0;
+                last_wheel = -1;
                 LOG_INFO("TOC switch to input mode");
             } else if (button == BUTTON_PLAY) {
                 LOG_INFO("TOC jump to chapter %d", selected);
@@ -1315,6 +1332,7 @@ static int toc_func(void *arg)
                 return -2;
             } else if (button == BUTTON_MENU) {
                 mode = 0;
+                last_wheel = -1;
                 LOG_INFO("TOC back to list mode");
             }
         }
@@ -1334,7 +1352,7 @@ static int file_info_func(void *arg)
     rb->snprintf(info[4], sizeof(info[4]), "缓存页: %d", cache_count);
     rb->snprintf(info[5], sizeof(info[5]), "章节: %d", chapter_count);
     rb->snprintf(info[6], sizeof(info[6]), "夜间模式: %s", night_mode ? "开" : "关");
-    rb->snprintf(info[7], sizeof(info[7]), "版本: 8.7");
+    rb->snprintf(info[7], sizeof(info[7]), "版本: 8.8");
 
     int button;
     while (1) {
@@ -1700,7 +1718,6 @@ static bool open_book(const char *filename)
     current_file_offset = start_offset;
     cache_clear();
 
-    /* 先加载/扫描章节（会复用 render_buffer），再刷新阅读页 */
     load_or_scan_chapters();
     refresh_current_page();
 
@@ -1714,10 +1731,8 @@ static int file_browser(void)
     DIR *dir;
     char file_list[128][MAX_PATH];
     int num_files = 0, selected = 0;
-    long last_scroll_tick = 0;
-    int scroll_step = 1;
-    int last_scroll_button = 0;
     int prev_selected = -1;
+    int last_wheel = -1;    /* 滚轮上次绝对位置 */
 
     LOG_INFO("File browser started, scanning /ebook");
     dir = rb->opendir("/ebook");
@@ -1772,47 +1787,32 @@ static int file_browser(void)
 
         button = rb->button_get_w_tmo(HZ/10);
 
-        if (button == BUTTON_SCROLL_BACK) {
-            long cur_tick = (long)*rb->current_tick;
-            if (button != last_scroll_button) {
-                scroll_step = 1;
-                last_scroll_button = button;
-                last_scroll_tick = cur_tick;
-                selected -= 1;
-            } else {
-                long diff = cur_tick - last_scroll_tick;
-                if (diff < 0) diff += 0x7FFFFFFF;
-                if (diff < HZ / 10) {
-                    if (scroll_step < 2) scroll_step++;
-                } else {
-                    scroll_step = 1;
+#ifdef HAVE_WHEEL_POSITION
+        /* 主动轮询滚轮绝对位置，快速滚动一次多步 */
+        {
+            int wheel = rb->wheel_status();
+            if (wheel >= 0 && last_wheel >= 0) {
+                int delta = wheel - last_wheel;
+                if (delta < -48) delta += 96;
+                else if (delta > 48) delta -= 96;
+                if (delta >= 2 || delta <= -2) {
+                    int step = delta / 2;
+                    selected += step;
+                    if (selected < 0) selected = num_files - 1;
+                    if (selected >= num_files) selected = 0;
+                    LOG_INFO("File list wheel delta=%d step=%d selected=%d", delta, step, selected);
                 }
-                last_scroll_tick = cur_tick;
-                selected -= scroll_step;
             }
-            if (selected < 0) selected = num_files - 1;
-            LOG_INFO("File list scroll back, selected=%d", selected);
-        } else if (button == BUTTON_SCROLL_FWD) {
-            long cur_tick = (long)*rb->current_tick;
-            if (button != last_scroll_button) {
-                scroll_step = 1;
-                last_scroll_button = button;
-                last_scroll_tick = cur_tick;
-                selected += 1;
-            } else {
-                long diff = cur_tick - last_scroll_tick;
-                if (diff < 0) diff += 0x7FFFFFFF;
-                if (diff < HZ / 10) {
-                    if (scroll_step < 2) scroll_step++;
-                } else {
-                    scroll_step = 1;
-                }
-                last_scroll_tick = cur_tick;
-                selected += scroll_step;
-            }
-            if (selected >= num_files) selected = 0;
-            LOG_INFO("File list scroll forward, selected=%d", selected);
-        } else if (button == BUTTON_LEFT || button == BUTTON_RIGHT) {
+            last_wheel = wheel;
+        }
+#endif
+
+#ifdef HAVE_WHEEL_POSITION
+        if (button == BUTTON_SCROLL_BACK || button == BUTTON_SCROLL_FWD) {
+            /* 已由 wheel_status 处理，忽略 */
+        } else
+#endif
+        if (button == BUTTON_LEFT || button == BUTTON_RIGHT) {
             if (button == BUTTON_LEFT) {
                 if (selected > 0) selected--;
                 else selected = num_files - 1;
@@ -1847,6 +1847,7 @@ static int file_browser(void)
                     }
                 }
                 rb->lcd_scroll_stop();
+                last_wheel = -1;
             }
         } else if (button == BUTTON_MENU) {
             LOG_INFO("File browser MENU pressed, exit plugin");

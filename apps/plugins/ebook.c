@@ -11,7 +11,7 @@
  ***************************************************************************/
 
 #include "plugin.h"
-#include "md5.h"
+#include "lib/md5.h"
 
 #ifndef MD5_STRING_LENGTH
 #define MD5_STRING_LENGTH 32

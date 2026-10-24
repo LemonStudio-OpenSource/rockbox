@@ -1,17 +1,21 @@
 /***************************************************************************
  *             ebook.c - 电子书阅读器 (iPod Color / Video / Classic)
- *  版本：8.5 适配 iPod Video/Classic，修复夜间模式刷新，开屏像素居中
- *  功能：文件浏览、UTF-8 渲染、夜间模式、5个书签、精确翻页、偏移量缓存
- *  内存：缓存 41 页偏移量，内存占用极小
+ *  版本：8.7 章节扫描 + MD5 缓存 + 目录跳转
+ *  功能：文件浏览、UTF-8 渲染、夜间模式、5个书签、精确翻页、偏移量缓存、
+ *        章节扫描（首次扫描写入缓存，MD5 校验后复用）、目录列表/数字输入跳转
+ *  内存：缓存 41 页偏移量 + 静态章节数组（200 章 × 32B）+ 章节缓存文件
  *  按键：左/右键翻页，MENU 主菜单，PLAY 快速书签
- *  菜单：主菜单按 MENU 无效，新增"返回阅读"项（生效）
- *  滚轮：仅在文件列表可用，其他界面仅左右键
- *  日志：/ebook/logs/yyyy-mm-dd-hh-mm-ss.txt，记录所有操作
+ *  目录：SELECT 切换列表/数字模式，PLAY 跳转，MENU 返回
+ *  日志：/ebook/logs/yyyy-mm-dd-hh-mm-ss.txt
  *  开屏：根据机型显示 "Lemon E-Book / For XXX / Ver.0.9Beta"，像素居中
- *  改进：文件信息增强，文件名列表滚动显示
  ***************************************************************************/
 
 #include "plugin.h"
+#include "md5.h"
+
+#ifndef MD5_STRING_LENGTH
+#define MD5_STRING_LENGTH 32
+#endif
 
 /* 配置 */
 #ifndef LCD_WIDTH
@@ -22,13 +26,17 @@
 #endif
 #define MAX_BOOKMARKS   5
 #define SETTINGS_FILE   "/ebook/config/settings.cfg"
-#define READ_BUFFER_SIZE (4 * 1024)   /* 渲染缓冲区 */
-#define CACHE_SIZE      41            /* 窗口大小：存储最近访问的页偏移量 */
+#define READ_BUFFER_SIZE (4 * 1024)
+#define CACHE_SIZE      41
+
+#define MAX_CHAPTERS    200
+#define CHAP_TITLE_LEN  32
+#define MD5_HEX_LEN     32
 
 /* 全局变量 */
 static char *render_buffer = NULL;
 static size_t render_buf_size = 0;
-static int current_file_offset = 0;    /* 当前页起始偏移 */
+static int current_file_offset = 0;
 static char current_file[MAX_PATH];
 static int file_size = 0;
 static int font_height, font_width;
@@ -36,6 +44,12 @@ static int lines_per_screen = 0;
 
 /* 书签 */
 static int bookmarks[MAX_BOOKMARKS];
+
+/* 章节 */
+static int  chapter_offsets[MAX_CHAPTERS];
+static char chapter_titles[MAX_CHAPTERS][CHAP_TITLE_LEN];
+static int  chapter_numbers[MAX_CHAPTERS];
+static int  chapter_count = 0;
 
 /* 标题栏轮换 */
 static long last_toggle_tick = 0;
@@ -87,13 +101,12 @@ static void log_write(const char *level, const char *fmt, ...)
 #define LOG_WARN(fmt, ...)   log_write("WARNING", fmt, ##__VA_ARGS__)
 #define LOG_ERROR(fmt, ...)  log_write("ERROR", fmt, ##__VA_ARGS__)
 
-/* ---------- 偏移量缓存（无序集合，支持最邻近查找） ---------- */
+/* ---------- 偏移量缓存 ---------- */
 static int page_offsets[CACHE_SIZE];
-static int cache_count = 0;                /* 当前缓存中有效偏移量个数 */
-static int current_cache_pos = 0;          /* 当前页在缓存中的索引（若有） */
-static bool current_cache_valid = false;   /* 当前偏移量是否在缓存中 */
+static int cache_count = 0;
+static int current_cache_pos = 0;
+static bool current_cache_valid = false;
 
-/* 清空缓存 */
 static void cache_clear(void)
 {
     cache_count = 0;
@@ -102,12 +115,10 @@ static void cache_clear(void)
     LOG_INFO("Cache cleared");
 }
 
-/* 添加一个偏移量到缓存（去重，若已存在则忽略，返回其在缓存中的索引） */
 static int cache_add_offset(int offset)
 {
     if (offset < 0 || offset >= file_size) return -1;
 
-    /* 检查是否已存在 */
     for (int i = 0; i < cache_count; i++) {
         if (page_offsets[i] == offset) {
             LOG_INFO("Cache duplicate offset %d ignored", offset);
@@ -115,7 +126,6 @@ static int cache_add_offset(int offset)
         }
     }
 
-    /* 缓存未满，直接添加 */
     if (cache_count < CACHE_SIZE) {
         page_offsets[cache_count] = offset;
         int idx = cache_count;
@@ -124,13 +134,11 @@ static int cache_add_offset(int offset)
         return idx;
     }
 
-    /* 缓存已满：丢弃最旧的（索引0），左移所有元素，新元素放在末尾 */
     for (int i = 0; i < CACHE_SIZE - 1; i++) {
         page_offsets[i] = page_offsets[i + 1];
     }
     page_offsets[CACHE_SIZE - 1] = offset;
     cache_count = CACHE_SIZE;
-    /* 如果当前页索引受影响，调整 current_cache_pos */
     if (current_cache_valid && current_cache_pos > 0) {
         current_cache_pos--;
     }
@@ -138,7 +146,6 @@ static int cache_add_offset(int offset)
     return CACHE_SIZE - 1;
 }
 
-/* 在缓存中查找小于 offset 的最大偏移量（即上一页），返回索引，未找到返回 -1 */
 static int cache_find_prev(int offset)
 {
     int best_idx = -1;
@@ -157,11 +164,10 @@ static int cache_find_prev(int offset)
     return best_idx;
 }
 
-/* 在缓存中查找大于 offset 的最小偏移量（即下一页），返回索引，未找到返回 -1 */
 static int cache_find_next(int offset)
 {
     int best_idx = -1;
-    int best_val = file_size; /* 大于所有合法偏移 */
+    int best_val = file_size;
     for (int i = 0; i < cache_count; i++) {
         if (page_offsets[i] > offset && page_offsets[i] < best_val) {
             best_val = page_offsets[i];
@@ -287,10 +293,9 @@ static int get_file_size(int fd)
 }
 
 /* ============================================================
-   核心渲染与邻页计算（拆分为三个函数，避免重复渲染）
+   核心渲染与邻页计算
    ============================================================ */
 
-/* 1. 计算上一页偏移量（仅扫描，不绘制） */
 static int compute_prev_offset(int start_offset)
 {
     if (start_offset <= 0) return -1;
@@ -317,7 +322,6 @@ static int compute_prev_offset(int start_offset)
             if (newline_count >= target_newlines) {
                 int candidate = search_offset + 1;
                 if (candidate < start_offset) {
-                    /* 对齐 UTF-8 边界 */
                     while (candidate < start_offset) {
                         unsigned char c;
                         if (rb->lseek(fd, candidate, SEEK_SET) < 0) break;
@@ -330,7 +334,6 @@ static int compute_prev_offset(int start_offset)
                         break;
                     }
                 }
-                /* 候选无效，继续向前搜索 */
                 search_offset = search_offset - 1;
                 newline_count = 0;
                 continue;
@@ -345,7 +348,6 @@ static int compute_prev_offset(int start_offset)
     return found_offset;
 }
 
-/* 2. 计算下一页偏移量（模拟渲染，不绘制） */
 static int compute_next_offset(int start_offset)
 {
     if (start_offset >= file_size) return -1;
@@ -365,7 +367,6 @@ static int compute_next_offset(int start_offset)
     }
     render_buffer[bytes_read] = '\0';
 
-    /* 对齐 UTF-8 边界 */
     int safe_start = 0;
     while (safe_start < bytes_read && ((unsigned char)render_buffer[safe_start] & 0xC0) == 0x80) {
         safe_start++;
@@ -441,7 +442,6 @@ static int compute_next_offset(int start_offset)
     }
 }
 
-/* 3. 渲染指定偏移量的页面（不计算邻页，只绘制） */
 static void render_page(int offset)
 {
     LOG_INFO("render_page at offset %d", offset);
@@ -478,7 +478,6 @@ static void render_page(int offset)
     apply_color_scheme();
     rb->lcd_clear_display();
 
-    /* 标题栏 */
     long tick = *rb->current_tick;
     if (tick - last_toggle_tick >= HZ * 5) {
         last_toggle_tick = tick;
@@ -498,7 +497,6 @@ static void render_page(int offset)
     int max_x = LCD_WIDTH - w_batt;
     if (max_x >= 0) rb->lcd_puts(max_x / font_width, 0, (const unsigned char *)batt);
 
-    /* 内容区 */
     int line_y = 1;
     char line_buf[256];
     int line_buf_len = 0;
@@ -560,7 +558,6 @@ static void render_page(int offset)
         rb->lcd_puts(0, line_y, (const unsigned char *)line_buf);
     }
 
-    /* 底部状态栏 */
     int percent = (file_size > 0) ? (offset * 100) / file_size : 0;
     char status_left[16], status_right[16];
     rb->snprintf(status_left, sizeof(status_left), "偏移:%d", offset);
@@ -574,7 +571,6 @@ static void render_page(int offset)
     rb->lcd_update();
     rb->close(fd);
 
-    /* 更新当前偏移量在缓存中的位置 */
     int idx = cache_add_offset(offset);
     if (idx >= 0) {
         current_cache_pos = idx;
@@ -582,13 +578,12 @@ static void render_page(int offset)
     }
 }
 
-/* 刷新当前页（供外部调用，直接渲染当前偏移量） */
 static void refresh_current_page(void)
 {
     render_page(current_file_offset);
 }
 
-/* ---------- 翻页函数（混合模式） ---------- */
+/* ---------- 翻页函数 ---------- */
 static void go_next_page(void)
 {
     LOG_INFO("go_next_page from offset %d", current_file_offset);
@@ -647,6 +642,385 @@ static void go_prev_page(void)
     cache_add_offset(current_file_offset);
     render_page(current_file_offset);
     LOG_INFO("go_prev_page: computed prev offset %d", current_file_offset);
+}
+
+/* ---------- 章节扫描 ---------- */
+
+/* 判断一行是否是章节标题候选 */
+static int match_chapter_line(const char *line, int len,
+                              char *title, size_t title_size, int *num_out)
+{
+    if (len <= 0 || len > 60) return 0;
+
+    /* 行尾不能是句读 */
+    unsigned char last = (unsigned char)line[len - 1];
+    if (last == '.' || last == '!' || last == '?' || last == ';' || last == ',') return 0;
+    if (len >= 3) {
+        const unsigned char *t = (const unsigned char *)line + len - 3;
+        if (t[0] == 0xE3 && (t[1] == 0x80 || t[1] == 0x82)) return 0;
+        if (t[0] == 0xEF && t[1] == 0xBC &&
+            (t[2] == 0x81 || t[2] == 0x9F || t[2] == 0x9B || t[2] == 0x8C)) return 0;
+    }
+
+    int evidence_pos = -1, evidence_len = 0, num = -1;
+
+    /* 中文序号：行内任意位置 "第<数字>章/回/节/卷/话/篇" */
+    {
+        const char *p = line;
+        const char *end = line + len;
+        while (p + 5 < end) {
+            if ((unsigned char)p[0] == 0xE7 && (unsigned char)p[1] == 0xAC && (unsigned char)p[2] == 0xAC) {
+                const char *q = p + 3;
+                int value = 0, ok = 0;
+                while (q < end && *q >= '0' && *q <= '9') {
+                    value = value * 10 + (*q - '0');
+                    q++; ok = 1;
+                }
+                if (!ok && q + 3 <= end) {
+                    const unsigned char *cn = (const unsigned char *)q;
+                    if (cn[0] == 0xE4 && cn[1] == 0xB8 && cn[2] == 0x80) { value = 1; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE4 && cn[1] == 0xBA && cn[2] == 0x8C) { value = 2; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE4 && cn[1] == 0xB8 && cn[2] == 0x89) { value = 3; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE5 && cn[1] == 0x9B && cn[2] == 0x9B) { value = 4; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE4 && cn[1] == 0xBA && cn[2] == 0x94) { value = 5; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE5 && cn[1] == 0x85 && cn[2] == 0xAD) { value = 6; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE4 && cn[1] == 0xB8 && cn[2] == 0x83) { value = 7; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE5 && cn[1] == 0x85 && cn[2] == 0xAB) { value = 8; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE4 && cn[1] == 0xB9 && cn[2] == 0x9D) { value = 9; q += 3; ok = 1; }
+                    else if (cn[0] == 0xE5 && cn[1] == 0x8D && cn[2] == 0x81) { value = 10; q += 3; ok = 1; }
+                }
+                if (ok && q + 3 <= end) {
+                    if ((unsigned char)q[0] == 0xE7 && (unsigned char)q[1] == 0xAB && (unsigned char)q[2] == 0xA0) {
+                        evidence_pos = (int)(p - line);
+                        evidence_len = (int)(q + 3 - p);
+                        num = value;
+                        break;
+                    }
+                    if ((unsigned char)q[0] == 0xE5 && (unsigned char)q[1] == 0x9B && (unsigned char)q[2] == 0x9E) {
+                        evidence_pos = (int)(p - line);
+                        evidence_len = (int)(q + 3 - p);
+                        num = value;
+                        break;
+                    }
+                    if ((unsigned char)q[0] == 0xE8 && (unsigned char)q[1] == 0x8A && (unsigned char)q[2] == 0x82) {
+                        evidence_pos = (int)(p - line);
+                        evidence_len = (int)(q + 3 - p);
+                        num = value;
+                        break;
+                    }
+                    if ((unsigned char)q[0] == 0xE5 && (unsigned char)q[1] == 0x8D && (unsigned char)q[2] == 0xB7) {
+                        evidence_pos = (int)(p - line);
+                        evidence_len = (int)(q + 3 - p);
+                        num = value;
+                        break;
+                    }
+                    if ((unsigned char)q[0] == 0xE8 && (unsigned char)q[1] == 0xAF && (unsigned char)q[2] == 0x9D) {
+                        evidence_pos = (int)(p - line);
+                        evidence_len = (int)(q + 3 - p);
+                        num = value;
+                        break;
+                    }
+                    if ((unsigned char)q[0] == 0xE7 && (unsigned char)q[1] == 0xAF && (unsigned char)q[2] == 0x87) {
+                        evidence_pos = (int)(p - line);
+                        evidence_len = (int)(q + 3 - p);
+                        num = value;
+                        break;
+                    }
+                }
+            }
+            p++;
+        }
+    }
+
+    /* 英文序号：行内任意位置 "CHAPTER N" */
+    if (evidence_pos < 0) {
+        const char *p = line;
+        const char *end = line + len;
+        while (p + 7 <= end) {
+            if ((*p == 'C' || *p == 'c') &&
+                (p[1] == 'H' || p[1] == 'h') &&
+                (p[2] == 'A' || p[2] == 'a') &&
+                (p[3] == 'P' || p[3] == 'p') &&
+                (p[4] == 'T' || p[4] == 't') &&
+                (p[5] == 'E' || p[5] == 'e') &&
+                (p[6] == 'R' || p[6] == 'r')) {
+                const char *q = p + 7;
+                while (q < end && (*q == ' ' || *q == '\t')) q++;
+                int value = 0, ok = 0;
+                while (q < end && *q >= '0' && *q <= '9') {
+                    value = value * 10 + (*q - '0');
+                    q++; ok = 1;
+                }
+                if (ok) {
+                    evidence_pos = (int)(p - line);
+                    evidence_len = (int)(q - p);
+                    num = value;
+                    break;
+                }
+            }
+            p++;
+        }
+    }
+
+    if (evidence_pos < 0) return 0;
+
+    /* 引用模式排除：证据后紧跟逗号，且逗号后还有 >10 字节文本 */
+    const char *after = line + evidence_pos + evidence_len;
+    const char *line_end = line + len;
+    while (after < line_end && (*after == ' ' || *after == '\t')) after++;
+    if (after < line_end && (unsigned char)*after == ',') {
+        if ((int)(line_end - after - 1) > 10) return 0;
+    }
+
+    int copy_len = len < (int)title_size - 1 ? len : (int)title_size - 1;
+    while (copy_len > 0 && ((unsigned char)line[copy_len] & 0xC0) == 0x80) copy_len--;
+    rb->memcpy(title, line, copy_len);
+    title[copy_len] = '\0';
+    if (num_out) *num_out = num;
+    return 1;
+}
+
+static bool scan_chapters(void)
+{
+    int fd = rb->open(current_file, O_RDONLY);
+    if (fd < 0) {
+        LOG_ERROR("scan_chapters: cannot open %s", current_file);
+        return false;
+    }
+
+    char *buf = render_buffer;
+    size_t buf_size = render_buf_size;
+    if (buf_size < 1024) { rb->close(fd); return false; }
+
+    int carry = 0;
+    int abs_base = 0;
+    chapter_count = 0;
+
+    while (1) {
+        ssize_t n = rb->read(fd, buf + carry, buf_size - carry - 1);
+        if (n <= 0) break;
+        int total = carry + n;
+        buf[total] = '\0';
+
+        int line_begin = 0;
+        for (int i = 0; i < total; i++) {
+            if (buf[i] != '\n') continue;
+
+            int line_len = i - line_begin;
+            if (line_len > 0 && buf[line_begin + line_len - 1] == '\r') line_len--;
+
+            int line_abs = abs_base + line_begin;
+
+            char title[CHAP_TITLE_LEN];
+            int num = -1;
+            if (line_len > 0 &&
+                match_chapter_line(buf + line_begin, line_len, title, sizeof(title), &num)) {
+                if (chapter_count < MAX_CHAPTERS) {
+                    chapter_offsets[chapter_count] = line_abs;
+                    rb->strlcpy(chapter_titles[chapter_count], title, CHAP_TITLE_LEN);
+                    chapter_numbers[chapter_count] = num;
+                    LOG_INFO("Chapter %d: off=%d num=%d '%s'",
+                             chapter_count, line_abs, num, title);
+                    chapter_count++;
+                }
+            }
+
+            line_begin = i + 1;
+        }
+
+        carry = total - line_begin;
+        if (carry > 0) rb->memmove(buf, buf + line_begin, carry);
+        abs_base += line_begin;
+    }
+
+    if (carry > 0) {
+        int line_len = carry;
+        if (line_len > 0 && buf[line_len - 1] == '\r') line_len--;
+        char title[CHAP_TITLE_LEN];
+        int num = -1;
+        if (line_len > 0 &&
+            match_chapter_line(buf, line_len, title, sizeof(title), &num)) {
+            if (chapter_count < MAX_CHAPTERS) {
+                chapter_offsets[chapter_count] = abs_base;
+                rb->strlcpy(chapter_titles[chapter_count], title, CHAP_TITLE_LEN);
+                chapter_numbers[chapter_count] = num;
+                chapter_count++;
+            }
+        }
+    }
+
+    rb->close(fd);
+    LOG_INFO("scan_chapters: %d chapters found", chapter_count);
+    return chapter_count > 0;
+}
+
+static void jump_to_chapter(int idx)
+{
+    if (idx < 0 || idx >= chapter_count) return;
+    LOG_INFO("jump_to_chapter %d -> offset %d", idx, chapter_offsets[idx]);
+    current_file_offset = chapter_offsets[idx];
+    cache_clear();
+    render_page(current_file_offset);
+}
+
+/* ---------- MD5 与章节缓存 ---------- */
+
+/* 计算当前文件的 MD5，返回 0 成功，-1 失败 */
+static int compute_file_md5(char *hex_out, size_t hex_size)
+{
+    if (hex_size < MD5_STRING_LENGTH + 1) return -1;
+
+    int fd = rb->open(current_file, O_RDONLY);
+    if (fd < 0) return -1;
+
+    struct md5_s md5;
+    InitMD5(&md5);
+
+    ssize_t n;
+    while ((n = rb->read(fd, render_buffer, render_buf_size)) > 0) {
+        AddMD5(&md5, render_buffer, (size_t)n);
+    }
+    rb->close(fd);
+
+    if (n < 0) return -1;
+
+    EndMD5(&md5);
+    psz_md5_hash(hex_out, &md5);
+    return 0;
+}
+
+/* 读取章节缓存并校验 MD5，成功返回 true */
+static bool load_chapter_cache(const char *cache_path, const char *expected_md5)
+{
+    int fd = rb->open(cache_path, O_RDONLY);
+    if (fd < 0) return false;
+
+    char *buf = render_buffer;
+    size_t buf_size = render_buf_size;
+    if (buf_size < 256) { rb->close(fd); return false; }
+
+    ssize_t bytes = rb->read(fd, buf, buf_size - 1);
+    rb->close(fd);
+    if (bytes <= 0) return false;
+    buf[bytes] = '\0';
+
+    /* 校验 MD5 */
+    char *md5_line = rb->strstr(buf, "MD5=");
+    if (!md5_line) return false;
+    md5_line += 4;
+    if (rb->strncmp(md5_line, expected_md5, MD5_HEX_LEN) != 0) {
+        LOG_INFO("Chapter cache MD5 mismatch, rescan needed");
+        return false;
+    }
+
+    /* 解析章节行 */
+    chapter_count = 0;
+    char *p = buf;
+    while (p && *p && chapter_count < MAX_CHAPTERS) {
+        char *line = rb->strstr(p, "\n");
+        if (!line) break;
+        line++;
+        p = line;
+
+        if (*line < '0' || *line > '9') continue;
+
+        /* 手动解析 "idx|offset|title" */
+        char *sep1 = rb->strchr(line, '|');
+        if (!sep1) continue;
+        char *sep2 = rb->strchr(sep1 + 1, '|');
+        if (!sep2) continue;
+
+        *sep1 = '\0';
+        *sep2 = '\0';
+        int idx = rb->atoi(line);
+        int offset = rb->atoi(sep1 + 1);
+        char *title = sep2 + 1;
+
+        int tlen = rb->strlen(title);
+        while (tlen > 0 && (title[tlen-1] == '\n' || title[tlen-1] == '\r')) {
+            title[--tlen] = '\0';
+        }
+
+        if (idx >= 1 && offset >= 0 && offset < file_size && tlen > 0) {
+            chapter_offsets[chapter_count] = offset;
+            rb->strlcpy(chapter_titles[chapter_count], title, CHAP_TITLE_LEN);
+            chapter_numbers[chapter_count] = idx;
+            chapter_count++;
+        }
+    }
+
+    LOG_INFO("Loaded %d chapters from cache", chapter_count);
+    return chapter_count > 0;
+}
+
+/* 写入章节缓存 */
+static void save_chapter_cache(const char *cache_path, const char *md5_hex)
+{
+    rb->mkdir("/ebook/config");
+    int fd = rb->open(cache_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) {
+        LOG_ERROR("Cannot write chapter cache %s", cache_path);
+        return;
+    }
+
+    char header[128];
+    int len = rb->snprintf(header, sizeof(header),
+                           "[Chapters]\nMD5=%s\nCount=%d\n",
+                           md5_hex, chapter_count);
+    rb->write(fd, header, len);
+
+    for (int i = 0; i < chapter_count; i++) {
+        char line[CHAP_TITLE_LEN + 32];
+        char safe_title[CHAP_TITLE_LEN];
+        rb->strlcpy(safe_title, chapter_titles[i], sizeof(safe_title));
+        for (char *c = safe_title; *c; c++) {
+            if (*c == '|') *c = ' ';
+        }
+        int n = rb->snprintf(line, sizeof(line), "%d|%d|%s\n",
+                             chapter_numbers[i] > 0 ? chapter_numbers[i] : (i + 1),
+                             chapter_offsets[i],
+                             safe_title);
+        rb->write(fd, line, n);
+    }
+    rb->close(fd);
+    LOG_INFO("Chapter cache saved: %d chapters, md5=%s", chapter_count, md5_hex);
+}
+
+/* 加载或扫描章节：MD5 一致则读缓存，否则扫描并写缓存 */
+static void load_or_scan_chapters(void)
+{
+    char base[MAX_PATH];
+    rb->strlcpy(base, current_file, sizeof(base));
+    char *p = rb->strrchr(base, '/');
+    if (p) rb->strlcpy(base, p + 1, sizeof(base));
+    char *dot = rb->strrchr(base, '.');
+    if (dot && rb->strcmp(dot, ".txt") == 0) {
+        rb->strlcpy(dot, "_chapters.cfg", sizeof(base) - (dot - base));
+    } else {
+        rb->strlcat(base, "_chapters.cfg", sizeof(base));
+    }
+
+    char cache_path[MAX_PATH];
+    rb->snprintf(cache_path, sizeof(cache_path), "/ebook/config/%s", base);
+
+    char md5_hex[MD5_HEX_LEN + 1];
+    if (compute_file_md5(md5_hex, sizeof(md5_hex)) != 0) {
+        LOG_WARN("MD5 compute failed, fallback to scan");
+        scan_chapters();
+        return;
+    }
+    LOG_INFO("Current txt MD5: %s", md5_hex);
+
+    if (load_chapter_cache(cache_path, md5_hex)) {
+        LOG_INFO("Chapter cache hit, skip scanning");
+        return;
+    }
+
+    LOG_INFO("Chapter cache miss or stale, scanning");
+    scan_chapters();
+    if (chapter_count > 0) {
+        save_chapter_cache(cache_path, md5_hex);
+    }
 }
 
 /* ---------- 书签管理 ---------- */
@@ -733,7 +1107,7 @@ static void save_bookmarks_to_file(void)
              bookmarks[0], bookmarks[1], bookmarks[2], bookmarks[3], bookmarks[4]);
 }
 
-/* ---------- 菜单系统（无滚轮，仅左右键） ---------- */
+/* ---------- 菜单系统 ---------- */
 typedef struct {
     const char *text;
     int (*func)(void *);
@@ -780,7 +1154,7 @@ static int show_menu(const menu_item_t *items, int count, const char *title, int
             if (ret == -1) return -1;
             if (ret == 1)  return 1;
             if (ret == -2) return -2;
-            if (ret == -3) return -3;   /* 设置已改变，通知上层重建菜单 */
+            if (ret == -3) return -3;
         } else if (button == BUTTON_MENU) {
             if (menu_level == 0) {
                 continue;
@@ -791,20 +1165,176 @@ static int show_menu(const menu_item_t *items, int count, const char *title, int
     }
 }
 
-/* ---- 菜单功能 ---- */
+/* ---- 目录 ---- */
+static int toc_func(void *arg)
+{
+    (void)arg;
 
+    if (chapter_count == 0) {
+        rb->splash(HZ, "未识别到章节");
+        return -1;
+    }
+
+    int selected = 0;
+    for (int i = 0; i < chapter_count; i++) {
+        if (chapter_offsets[i] <= current_file_offset) {
+            selected = i;
+        } else {
+            break;
+        }
+    }
+
+    int mode = 0;       /* 0=列表 1=数字输入 */
+    int button;
+
+    char input[8] = "";
+    int cursor_pos = 0;
+    const char *keys = "1234567890X";
+    int key_len = rb->strlen(keys);
+
+    while (1) {
+        rb->lcd_scroll_stop();
+        apply_color_scheme();
+        rb->lcd_clear_display();
+
+        if (mode == 0) {
+            char hdr[32];
+            rb->snprintf(hdr, sizeof(hdr), "目录 %d/%d", selected + 1, chapter_count);
+            rb->lcd_puts(0, 0, (const unsigned char *)hdr);
+
+            int max_display = lines_per_screen - 3;
+            if (max_display < 1) max_display = 1;
+            int start_idx = 0;
+            if (selected >= max_display) start_idx = selected - max_display + 1;
+
+            for (int i = 0; i < max_display && (start_idx + i) < chapter_count; i++) {
+                int idx = start_idx + i;
+                char line[CHAP_TITLE_LEN + 12];
+                int num = chapter_numbers[idx];
+                if (num < 0) num = idx + 1;
+                rb->snprintf(line, sizeof(line), "%d.%s", num, chapter_titles[idx]);
+
+                int y = i + 1;
+                if (idx == selected) {
+                    rb->lcd_puts(0, y, (const unsigned char *)">");
+                    rb->lcd_puts_scroll(1, y, (const unsigned char *)line);
+                } else {
+                    rb->lcd_puts(0, y, (const unsigned char *)" ");
+                    rb->lcd_puts(1, y, (const unsigned char *)line);
+                }
+            }
+
+            rb->lcd_puts(0, lines_per_screen - 2, (const unsigned char *)"[滚轮/<>]选择 [SELECT]输入数字");
+            rb->lcd_puts(0, lines_per_screen - 1, (const unsigned char *)"[PLAY]跳转 [MENU]返回");
+            rb->lcd_update();
+
+            button = rb->button_get_w_tmo(HZ/2);
+            if (button == BUTTON_SCROLL_BACK || button == BUTTON_LEFT) {
+                if (selected > 0) selected--;
+                else selected = chapter_count - 1;
+            } else if (button == BUTTON_SCROLL_FWD || button == BUTTON_RIGHT) {
+                if (selected < chapter_count - 1) selected++;
+                else selected = 0;
+            } else if (button == BUTTON_SELECT) {
+                mode = 1;
+                input[0] = '\0';
+                cursor_pos = 0;
+                LOG_INFO("TOC switch to input mode");
+            } else if (button == BUTTON_PLAY) {
+                LOG_INFO("TOC jump to chapter %d", selected);
+                jump_to_chapter(selected);
+                return -2;
+            } else if (button == BUTTON_MENU) {
+                LOG_INFO("TOC exit");
+                return -1;
+            }
+        } else {
+            rb->lcd_puts(0, 0, (const unsigned char *)"输入章节号:");
+            char disp[24];
+            rb->snprintf(disp, sizeof(disp), "输入: %s", input);
+            rb->lcd_puts(0, 1, (const unsigned char *)disp);
+            rb->snprintf(disp, sizeof(disp), "范围: 1-%d", chapter_count);
+            rb->lcd_puts(0, 2, (const unsigned char *)disp);
+
+            int line_y = 4;
+            int col = 0;
+            for (int i = 0; i < key_len; i++) {
+                char ch[2] = {keys[i], '\0'};
+                if (i == cursor_pos) {
+                    char buf[4];
+                    rb->snprintf(buf, sizeof(buf), "[%c]", keys[i]);
+                    rb->lcd_puts(col, line_y, (const unsigned char *)buf);
+                    col += rb->strlen(buf) + 1;
+                } else {
+                    rb->lcd_puts(col, line_y, (const unsigned char *)ch);
+                    col += 2;
+                }
+                if (col >= LCD_WIDTH / font_width - 2) {
+                    col = 0;
+                    line_y++;
+                }
+            }
+
+            rb->lcd_puts(0, lines_per_screen - 3, (const unsigned char *)"[<-->]移动 [SELECT]输入");
+            rb->lcd_puts(0, lines_per_screen - 2, (const unsigned char *)"[PLAY]跳转 [MENU]返回列表");
+            rb->lcd_update();
+
+            button = rb->button_get_w_tmo(HZ/2);
+            if (button == BUTTON_LEFT) {
+                if (cursor_pos > 0) cursor_pos--;
+                else cursor_pos = key_len - 1;
+            } else if (button == BUTTON_RIGHT) {
+                if (cursor_pos < key_len - 1) cursor_pos++;
+                else cursor_pos = 0;
+            } else if (button == BUTTON_SELECT) {
+                char c = keys[cursor_pos];
+                if (c == 'X') {
+                    int len = rb->strlen(input);
+                    if (len > 0) input[len - 1] = '\0';
+                    LOG_INFO("TOC input backspace, now '%s'", input);
+                } else {
+                    if (rb->strlen(input) < 4) {
+                        char digit[2] = {c, '\0'};
+                        rb->strlcat(input, digit, sizeof(input));
+                        LOG_INFO("TOC input append %c, now '%s'", c, input);
+                    }
+                }
+            } else if (button == BUTTON_PLAY) {
+                if (rb->strlen(input) == 0) {
+                    rb->splash(HZ, "请输入章节号");
+                    continue;
+                }
+                int target = rb->atoi(input);
+                if (target < 1 || target > chapter_count) {
+                    rb->splash(HZ, "章节号超出范围");
+                    LOG_WARN("TOC target %d out of range [1,%d]", target, chapter_count);
+                    continue;
+                }
+                LOG_INFO("TOC jump to chapter %d (input)", target);
+                jump_to_chapter(target - 1);
+                return -2;
+            } else if (button == BUTTON_MENU) {
+                mode = 0;
+                LOG_INFO("TOC back to list mode");
+            }
+        }
+    }
+}
+
+/* ---- 菜单功能 ---- */
 static int file_info_func(void *arg)
 {
     (void)arg;
-    char info[7][32];
+    char info[8][32];
     get_full_display_name(current_file, info[0], sizeof(info[0]));
     rb->snprintf(info[1], sizeof(info[1]), "大小: %d 字节 (%dKB)", file_size, file_size/1024);
     rb->snprintf(info[2], sizeof(info[2]), "偏移: %d", current_file_offset);
     int percent = (file_size > 0) ? (current_file_offset * 100) / file_size : 0;
     rb->snprintf(info[3], sizeof(info[3]), "进度: %d%%", percent);
     rb->snprintf(info[4], sizeof(info[4]), "缓存页: %d", cache_count);
-    rb->snprintf(info[5], sizeof(info[5]), "夜间模式: %s", night_mode ? "开" : "关");
-    rb->snprintf(info[6], sizeof(info[6]), "版本: 8.5");
+    rb->snprintf(info[5], sizeof(info[5]), "章节: %d", chapter_count);
+    rb->snprintf(info[6], sizeof(info[6]), "夜间模式: %s", night_mode ? "开" : "关");
+    rb->snprintf(info[7], sizeof(info[7]), "版本: 8.7");
 
     int button;
     while (1) {
@@ -813,7 +1343,7 @@ static int file_info_func(void *arg)
         rb->lcd_clear_display();
         rb->lcd_puts(0, 0, (const unsigned char *)"文件信息");
         int y = 2;
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 8; i++) {
             rb->lcd_puts(0, y++, (const unsigned char *)info[i]);
         }
         rb->lcd_puts(0, y+1, (const unsigned char *)"[MENU] 返回");
@@ -1028,15 +1558,11 @@ static int night_mode_func(void *arg)
 
     night_mode = !night_mode;
     save_global_settings();
-
-    /* 重新读取设置，确保全局状态与配置文件一致 */
     load_global_settings();
-
-    /* 立即应用新配色，并让主菜单重建后重绘 */
     apply_color_scheme();
 
     LOG_INFO("Night mode toggled to %d, request menu redraw", night_mode ? 1 : 0);
-    return -3;   /* 通知 show_main_menu_with_exit() 重建菜单 */
+    return -3;
 }
 
 static int exit_func(void *arg)
@@ -1063,6 +1589,7 @@ static int show_main_menu_with_exit(void)
 
         const menu_item_t items[] = {
             {"返回阅读",       return_to_reading_func, NULL},
+            {"目录",           toc_func,               NULL},
             {"文件信息",       file_info_func,         NULL},
             {"书签",           bookmark_list_func,     NULL},
             {"跳转到偏移量",   jump_offset_func,       NULL},
@@ -1070,26 +1597,25 @@ static int show_main_menu_with_exit(void)
             {"退出",           exit_func,              NULL}
         };
 
-        int ret = show_menu(items, 6, "主菜单", 0);
+        int ret = show_menu(items, 7, "主菜单", 0);
 
         if (ret == 1) {
             return 1;
         } else if (ret == -2) {
             return -2;
         } else if (ret == -3) {
-            continue;   /* 夜间模式已切换，重建菜单并重绘 */
+            continue;
         }
     }
 }
 
-/* ---------- 开屏画面（像素居中 + 机型自适应） ---------- */
+/* ---------- 开屏画面 ---------- */
 static void show_splash_screen(void)
 {
     rb->lcd_set_foreground(LCD_BLACK);
     rb->lcd_set_background(LCD_WHITE);
     rb->lcd_clear_display();
 
-    /* 根据编译目标自动切换机型行 */
 #if defined(APPLE_IPODVIDEO) || defined(IPOD_VIDEO)
     const char *model_line = "For iPod Video";
 #elif defined(IPOD_6G) || defined(IPOD_CLASSIC)
@@ -1111,7 +1637,6 @@ static void show_splash_screen(void)
     };
     int num_lines = 3;
 
-    /* 第一步：测量每一行的实际像素尺寸 */
     int line_widths[3];
     int line_heights[3];
     int total_height = 0;
@@ -1124,11 +1649,9 @@ static void show_splash_screen(void)
         total_height += h;
     }
 
-    /* 第二步：整体垂直居中 */
     int y = (LCD_HEIGHT - total_height) / 2;
     if (y < 0) y = 0;
 
-    /* 第三步：逐行按像素坐标水平居中绘制，避免多字体网格错位 */
     for (int i = 0; i < num_lines; i++) {
         int x = (LCD_WIDTH - line_widths[i]) / 2;
         if (x < 0) x = 0;
@@ -1138,7 +1661,6 @@ static void show_splash_screen(void)
 
     rb->lcd_update();
 
-    /* 等待 2 秒或按键跳过 */
     long start_tick = *rb->current_tick;
     while (*rb->current_tick - start_tick < HZ * 2) {
         int btn = rb->button_get_w_tmo(HZ/10);
@@ -1177,11 +1699,15 @@ static bool open_book(const char *filename)
     }
     current_file_offset = start_offset;
     cache_clear();
+
+    /* 先加载/扫描章节（会复用 render_buffer），再刷新阅读页 */
+    load_or_scan_chapters();
     refresh_current_page();
+
     return true;
 }
 
-/* ---------- 文件浏览器（带滚轮 + 文件名滚动修复） ---------- */
+/* ---------- 文件浏览器 ---------- */
 static int file_browser(void)
 {
     struct dirent *entry;

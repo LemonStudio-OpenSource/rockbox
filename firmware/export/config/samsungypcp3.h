@@ -52,6 +52,11 @@
 #define CONFIG_NAND NAND_RK27XX
 #define CONFIG_RK27XX_FTL RK27XX_FTL_SCHEME_A
 
+/* the NAND is writable through the FTL (ftl-rk27xx.c); the bootloader then
+ * starts Rockbox on a USB wake-up too, as Rockbox can serve the NAND to the
+ * host read-write */
+#define FTL_ALLOW_WRITE
+
 /* commented for now */
 /* #define HAVE_HOTSWAP */
 
@@ -83,6 +88,9 @@
 #define LCD_DPI 155
 #define LCD_DEPTH  16   /* pseudo 262.144 colors */
 #define LCD_PIXELFORMAT RGB565 /* rgb565 */
+
+/* Define this if your LCD can be enabled/disabled */
+#define HAVE_LCD_ENABLE
 
 /* Define this if your LCD can be put to sleep. HAVE_LCD_ENABLE
    should be defined as well. */

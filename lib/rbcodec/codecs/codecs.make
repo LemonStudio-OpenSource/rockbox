@@ -28,7 +28,9 @@ CODECFLAGS := $(CFLAGS) $(RBCODEC_CFLAGS) -fstrict-aliasing \
 ifdef APP_TYPE
  CODECLDFLAGS = $(SHARED_LDFLAGS)
  ifneq ($(UNAME), Darwin)
-  CODECLDFLAGS += -Wl,--gc-sections
+  ifeq (,$(findstring psp, $(MODELNAME)))
+    CODECLDFLAGS += -Wl,--gc-sections
+  endif
  endif
  CODECFLAGS += $(SHARED_CFLAGS) # <-- from Makefile
 else
@@ -137,7 +139,7 @@ ifeq ($(ARCH),arch_arm)
   $(SGCLIB) : CODECFLAGS +=  -O1
   $(VGMLIB) : CODECFLAGS +=  -O1
   $(WAVPACKLIB) : CODECFLAGS += -O3
-  ifneq (,$(findstring ctru, $(MODELNAME)))
+  ifneq (,$(findstring 3ds, $(MODELNAME)))
     # segfault with -O1
     $(SPCLIB) : CODECFLAGS += -O2
   endif

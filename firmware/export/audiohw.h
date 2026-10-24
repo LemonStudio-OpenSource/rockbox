@@ -178,6 +178,8 @@ struct sound_settings_info
 #elif defined(HAVE_WM8711) || defined(HAVE_WM8721) || \
       defined(HAVE_WM8731)
 #include "wm8731.h"
+#elif defined(HAVE_WM8973G_CODEC)
+#include "wm8973g_codec.h"
 #elif defined(HAVE_TLV320)
 #include "tlv320.h"
 #elif defined(HAVE_AS3514)
@@ -216,13 +218,15 @@ struct sound_settings_info
 #include "nwzlinux_codec.h"
 #elif defined(HAVE_CS4398)
 #include "cs4398.h"
+#elif defined(HAVE_CS42L51)
+#include "cs42l51.h"
 #elif defined(HAVE_ES9018)
 #include "es9018.h"
 #elif defined(HAVE_ES9218)
 #include "es9218.h"
 #elif (CONFIG_PLATFORM & PLATFORM_ANDROID)
 #include "android_codec.h"
-#elif ((CONFIG_PLATFORM & (PLATFORM_SDL | PLATFORM_GAME_CONSOLE)) | defined(RG_NANO))
+#elif ((CONFIG_PLATFORM & PLATFORM_SDL) | defined(RG_NANO))
 #include "sdl_codec.h"
 #elif defined(DX50)
 #include "codec-dx50.h"
@@ -242,6 +246,8 @@ struct sound_settings_info
 #include "echoplayer_codec.h"
 #elif defined(HAVE_HIBY_LINUX_CODEC)
 #include "hibylinux_codec.h"
+#elif defined(HAVE_TEAKLITE_CODEC)
+#include "teaklite_codec.h"
 #endif
 
 #if defined(HAVE_X1000_ICODEC_REC) && !defined(HAVE_X1000_ICODEC_PLAY)

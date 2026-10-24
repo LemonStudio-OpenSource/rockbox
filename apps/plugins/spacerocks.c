@@ -402,6 +402,15 @@
 #define AST_RIGHT       BUTTON_RIGHT
 #define AST_FIRE        BUTTON_A
 
+#elif CONFIG_KEYPAD == PSP_PAD
+#define AST_PAUSE       BUTTON_MENU
+#define AST_QUIT        BUTTON_BACK
+#define AST_THRUST      BUTTON_UP
+#define AST_HYPERSPACE  BUTTON_DOWN
+#define AST_LEFT        BUTTON_LEFT
+#define AST_RIGHT       BUTTON_RIGHT
+#define AST_FIRE        BUTTON_SELECT
+
 #else
 #error No keymap defined!
 #endif
@@ -2160,7 +2169,7 @@ enum plugin_status plugin_start(const void* parameter)
     backlight_ignore_timeout();
 
     highscore_load(SCORE_FILE, highscores, NUM_SCORES);
-    rb->srand(*rb->current_tick);
+
 
     /* create stars once, and once only: */
     create_stars();

@@ -336,6 +336,7 @@ static const char graphic_numeric[] = "graphic,numeric";
 #define DEFAULT_WPSNAME  "cabbiev2"
 #define DEFAULT_SBSNAME  "-"
 #define DEFAULT_FMS_NAME "cabbiev2"
+#define DEFAULT_WRS_NAME "cabbiev2"
 
 #if LCD_HEIGHT <= 64
   #define DEFAULT_FONT_HEIGHT 8
@@ -353,7 +354,7 @@ static const char graphic_numeric[] = "graphic,numeric";
   #define DEFAULT_FONT_HEIGHT 15
 #elif LCD_HEIGHT <= 320
   #define DEFAULT_FONT_HEIGHT 18
-#elif defined(SHANLING_Q1)
+#elif defined(SHANLING_Q1) || defined(SONY_PSP)
   /* 16pt font looks pretty aliased & ugly */
   #define DEFAULT_FONT_HEIGHT 18
 #elif LCD_HEIGHT <= 400
@@ -381,6 +382,10 @@ static const char graphic_numeric[] = "graphic,numeric";
   #elif DEFAULT_FONT_HEIGHT >= 23
     #define DEFAULT_ICONSET "tango_icons.24x24"
     #define DEFAULT_VIEWERS_ICONSET "tango_icons_viewers.24x24"
+  #elif defined(SONY_PSP)
+    /* 16pt icons looks too small on the PSP screen */
+    #define DEFAULT_ICONSET "tango_icons.18x18"
+    #define DEFAULT_VIEWERS_ICONSET "tango_icons_viewers.18x18"
   #elif DEFAULT_FONT_HEIGHT >= 15
     #define DEFAULT_ICONSET "tango_icons.16x16"
     #define DEFAULT_VIEWERS_ICONSET "tango_icons_viewers.16x16"
@@ -1344,13 +1349,13 @@ const struct settings_list settings[] = {
                 "scrollbar width",UNIT_INT, 3, MAX(LCD_WIDTH/10,25), 1,
                 NULL, NULL, NULL),
 #ifdef HAVE_TOUCHSCREEN
-    TABLE_SETTING(F_ALLOW_ARBITRARY_VALS, list_line_padding, LANG_LIST_LINE_PADDING,
+    TABLE_SETTING(F_THEMESETTING|F_ALLOW_ARBITRARY_VALS, list_line_padding, LANG_LIST_LINE_PADDING,
                   -1, "list padding", "auto,off", UNIT_PIXEL, list_pad_formatter,
                   list_pad_getlang, NULL, 16,
                   -1,0,2,4,6,8,10,12,16,20,24,28,32,38,44,50),
 #endif
 #if LCD_DEPTH > 1
-    TABLE_SETTING(F_ALLOW_ARBITRARY_VALS, list_separator_height, LANG_LIST_SEPARATOR,
+    TABLE_SETTING(F_THEMESETTING|F_ALLOW_ARBITRARY_VALS, list_separator_height, LANG_LIST_SEPARATOR,
                   0, "list separator height", "auto,off", UNIT_PIXEL,
                   list_pad_formatter, list_pad_getlang, NULL, 15,
                   -1,0,1,2,3,4,5,7,9,11,13,16,20,25,30),
@@ -1369,7 +1374,7 @@ const struct settings_list settings[] = {
     CHOICE_SETTING(0, timeformat, LANG_TIMEFORMAT, 0,
         "time format", "24hour,12hour", NULL, 2,
         ID2P(LANG_24_HOUR_CLOCK), ID2P(LANG_12_HOUR_CLOCK)),
-    OFFON_SETTING(0,show_icons, LANG_SHOW_ICONS ,true,"show icons", NULL),
+    OFFON_SETTING(F_THEMESETTING,show_icons, LANG_SHOW_ICONS ,true,"show icons", NULL),
     /* system */
     INT_SETTING(F_TIME_SETTING, poweroff, LANG_POWEROFF_IDLE, 10,
                 "idle poweroff", UNIT_MIN, 0,60,1,
@@ -2222,6 +2227,14 @@ const struct settings_list settings[] = {
                      DEFAULT_FMS_NAME, SBS_DIR "/", ".rfms"),
 #endif
 #endif /* CONFIG_TUNER */
+#ifdef HAVE_RECORDING
+    TEXT_SETTING(F_THEMESETTING|F_NEEDAPPLY, wrs_file, "wrs",
+                     DEFAULT_WRS_NAME, WPS_DIR "/", ".wrs"),
+#ifdef HAVE_REMOTE_LCD
+    TEXT_SETTING(F_THEMESETTING|F_NEEDAPPLY, rwrs_file, "rwrs",
+                     DEFAULT_WRS_NAME, WPS_DIR "/", ".rwrs"),
+#endif
+#endif
     TEXT_SETTING(F_THEMESETTING|F_NEEDAPPLY, font_file, "font",
                      DEFAULT_FONTNAME, FONT_DIR "/", ".fnt"),
     INT_SETTING(0, glyphs_to_cache, LANG_GLYPHS, DEFAULT_GLYPHS,
@@ -2455,7 +2468,7 @@ const struct settings_list settings[] = {
                    &list_kinetic_scroll_press_default, "kinetic scroll press",
                    list_kinetic_load_from_cfg, list_kinetic_write_to_cfg,
                    list_kinetic_is_default, list_kinetic_set_default),
-#endif
+#endif /* TOUCHSCREEN */
     OFFON_SETTING(0, prevent_skip, LANG_PREVENT_SKIPPING, false, "prevent track skip", NULL),
     OFFON_SETTING(0, rewind_across_tracks, LANG_REWIND_ACROSS_TRACKS, false, "rewind across tracks", NULL),
 #ifdef HAVE_PITCHCONTROL

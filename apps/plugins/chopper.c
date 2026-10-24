@@ -218,6 +218,12 @@ CONFIG_KEYPAD == MROBE500_PAD
 #define ACTION2     BUTTON_UP
 #define ACTIONTEXT  "A"
 
+#elif CONFIG_KEYPAD == PSP_PAD
+#define QUIT        BUTTON_BACK
+#define ACTION      BUTTON_SELECT
+#define ACTION2     BUTTON_MENU
+#define ACTIONTEXT  "Cross"
+
 #elif !defined(HAVE_TOUCHSCREEN)
 #error No keymap defined!
 #endif
@@ -1104,7 +1110,7 @@ enum plugin_status plugin_start(const void* parameter)
     backlight_ignore_timeout();
 
 
-    rb->srand( *rb->current_tick );
+
 
     configfile_load(CFG_FILE, config, 1, 0);
 

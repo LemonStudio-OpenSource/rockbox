@@ -22,6 +22,9 @@ TOOLS = $(TOOLSDIR)/rdf2binary $(TOOLSDIR)/convbdf \
 	$(TOOLSDIR)/uclpack $(TOOLSDIR)/mkboot $(TOOLSDIR)/iaudio_bl_flash.c \
 	$(TOOLSDIR)/iaudio_bl_flash.h
 TOOLS += $(foreach tool,$(TOOLSET),$(TOOLSDIR)/$(tool))
+# MKFIRMWARE can be a command plus options (or a system command such as cp).
+# Depend on its executable when it is one of our build tools.
+MKFIRMWARE_TOOL = $(filter $(TOOLSDIR)/%,$(firstword $(MKFIRMWARE)))
 
 ifeq (,$(PREFIX))
 ifdef APP_TYPE
@@ -114,6 +117,8 @@ ifneq (,$(findstring bootloader,$(APPSDIR)))
     include $(ROOTDIR)/firmware/target/hosted/fiio/fiio.make
   else ifneq (,$(findstring ingenic_x1000,$(MANUFACTURER)))
     include $(ROOTDIR)/firmware/target/mips/ingenic_x1000/x1000boot.make
+  else ifneq (,$(findstring psp-homebrew,$(APP_TYPE)))
+    include $(ROOTDIR)/packaging/psp/psp-eboot.make
   else
     include $(APPSDIR)/bootloader.make
   endif
@@ -180,6 +185,10 @@ else # core
     include $(ROOTDIR)/packaging/3ds/3ds.make
   endif
 
+  ifneq (,$(findstring psp-homebrew, $(APP_TYPE)))
+    include $(ROOTDIR)/packaging/psp/psp.make
+  endif
+
 endif # bootloader
 
 # Include makefile for flashing/debugging with OpenOCD & GDB
@@ -237,7 +246,7 @@ clean::
 		make.dep rombox.elf rombox.map rombox.bin romstart.txt \
 		$(BINARY) $(FLASHFILE) uisimulator bootloader flash $(BOOTLINK) \
 		rockbox.apk lang_enum.h rbversion.h fontbundle.h themeassets.h 3ds rockbox.3dsx \
-		rockbox.bnr rockbox.cia rockbox.icn rockbox.smdh
+		rockbox.bnr rockbox.cia rockbox.icn rockbox.smdh PSP EBOOT.PBP rockbox.prx
 
 #### linking the binaries: ####
 
@@ -293,7 +302,7 @@ $(BUILDDIR)/rockbox.bin : $(BUILDDIR)/rockbox.elf
 $(BUILDDIR)/rombox.bin : $(BUILDDIR)/rombox.elf
 	$(call PRINTS,OC $(@F))$(call objcopy,$<,$@)
 
-$(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.bin $(FLASHFILE)
+$(BUILDDIR)/$(BINARY) : $(BUILDDIR)/rockbox.bin $(FLASHFILE) $(MKFIRMWARE_TOOL)
 	$(call PRINTS,SCRAMBLE $(notdir $@)) $(MKFIRMWARE) $< $@
 
 $(MAXOUTFILE):
@@ -304,7 +313,7 @@ $(MAXOUTFILE):
 	$(SILENT)rm $(MAXINFILE)
 
 # iriver
-$(BUILDDIR)/rombox.iriver: $(BUILDDIR)/rombox.bin
+$(BUILDDIR)/rombox.iriver: $(BUILDDIR)/rombox.bin $(MKFIRMWARE_TOOL)
 	$(call PRINTS,Build ROM file)$(MKFIRMWARE) $< $@
 
 endif # !APP_TYPE

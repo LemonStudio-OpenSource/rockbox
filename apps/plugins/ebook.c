@@ -1,6 +1,6 @@
 /***************************************************************************
  *             ebook.c - 电子书阅读器 (iPod Color / Video / Classic)
- *  版本：8.9 修复章节扫描行长度硬限制与中文数字多位数解析
+ *  版本：9.0 修复章节缓存加载只读第一项的问题
  *  功能：文件浏览、UTF-8 渲染、夜间模式、5个书签、精确翻页、偏移量缓存、
  *        章节扫描（首次扫描写入缓存，MD5 校验后复用）、目录列表/数字输入跳转
  *  内存：缓存 41 页偏移量 + 静态章节数组（200 章 × 64B）+ 章节缓存文件
@@ -707,7 +707,6 @@ static int match_chapter_line(const char *line, int len,
 
     int evidence_pos = -1, evidence_len = 0, num = -1;
 
-    /* 中文序号：行内任意位置 "第<数字>章/回/节/卷/话/篇" */
     {
         const char *p = line;
         const char *end = line + len;
@@ -771,7 +770,6 @@ static int match_chapter_line(const char *line, int len,
         }
     }
 
-    /* 英文序号：行内任意位置 "CHAPTER N" */
     if (evidence_pos < 0) {
         const char *p = line;
         const char *end = line + len;
@@ -803,7 +801,6 @@ static int match_chapter_line(const char *line, int len,
 
     if (evidence_pos < 0) return 0;
 
-    /* 引用模式排除：证据后紧跟逗号，且逗号后还有 >10 字节文本 */
     const char *after = line + evidence_pos + evidence_len;
     const char *line_end = line + len;
     while (after < line_end && (*after == ' ' || *after == '\t')) after++;
@@ -964,20 +961,30 @@ static bool load_chapter_cache(const char *cache_path, const char *expected_md5)
         char *sep2 = rb->strchr(sep1 + 1, '|');
         if (!sep2) continue;
 
-        *sep1 = '\0';
-        *sep2 = '\0';
-        int idx = rb->atoi(line);
-        int offset = rb->atoi(sep1 + 1);
-        char *title = sep2 + 1;
+        /* 手动解析，不修改原缓冲区，避免破坏下一轮的 strstr */
+        int idx = 0;
+        for (char *c = line; c < sep1 && *c >= '0' && *c <= '9'; c++) {
+            idx = idx * 10 + (*c - '0');
+        }
 
-        int tlen = rb->strlen(title);
-        while (tlen > 0 && (title[tlen-1] == '\n' || title[tlen-1] == '\r')) {
-            title[--tlen] = '\0';
+        int offset = 0;
+        for (char *c = sep1 + 1; c < sep2 && *c >= '0' && *c <= '9'; c++) {
+            offset = offset * 10 + (*c - '0');
+        }
+
+        char *title = sep2 + 1;
+        int tlen = 0;
+        while (title[tlen] && title[tlen] != '\n' && title[tlen] != '\r') tlen++;
+
+        if (tlen > CHAP_TITLE_LEN - 1) {
+            tlen = CHAP_TITLE_LEN - 1;
+            while (tlen > 0 && ((unsigned char)title[tlen] & 0xC0) == 0x80) tlen--;
         }
 
         if (idx >= 1 && offset >= 0 && offset < file_size && tlen > 0) {
             chapter_offsets[chapter_count] = offset;
-            rb->strlcpy(chapter_titles[chapter_count], title, CHAP_TITLE_LEN);
+            rb->memcpy(chapter_titles[chapter_count], title, tlen);
+            chapter_titles[chapter_count][tlen] = '\0';
             chapter_numbers[chapter_count] = idx;
             chapter_count++;
         }
@@ -1394,7 +1401,7 @@ static int file_info_func(void *arg)
     rb->snprintf(info[4], sizeof(info[4]), "缓存页: %d", cache_count);
     rb->snprintf(info[5], sizeof(info[5]), "章节: %d", chapter_count);
     rb->snprintf(info[6], sizeof(info[6]), "夜间模式: %s", night_mode ? "开" : "关");
-    rb->snprintf(info[7], sizeof(info[7]), "版本: 8.9");
+    rb->snprintf(info[7], sizeof(info[7]), "版本: 9.0");
 
     int button;
     while (1) {

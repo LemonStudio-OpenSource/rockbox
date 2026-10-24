@@ -1,21 +1,25 @@
 /***************************************************************************
- *             ebook.c - 电子书阅读器 (iPod Color / Rockbox)
- *  版本：8.3 修复编译错误，滚动逻辑优化
+ *             ebook.c - 电子书阅读器 (iPod Color / Video / Classic)
+ *  版本：8.5 适配 iPod Video/Classic，修复夜间模式刷新，开屏像素居中
  *  功能：文件浏览、UTF-8 渲染、夜间模式、5个书签、精确翻页、偏移量缓存
  *  内存：缓存 41 页偏移量，内存占用极小
  *  按键：左/右键翻页，MENU 主菜单，PLAY 快速书签
  *  菜单：主菜单按 MENU 无效，新增"返回阅读"项（生效）
  *  滚轮：仅在文件列表可用，其他界面仅左右键
  *  日志：/ebook/logs/yyyy-mm-dd-hh-mm-ss.txt，记录所有操作
- *  开屏：显示 "Lemon E-Book / For iPod Color / Ver.0.9Beta" 持续2秒
+ *  开屏：根据机型显示 "Lemon E-Book / For XXX / Ver.0.9Beta"，像素居中
  *  改进：文件信息增强，文件名列表滚动显示
  ***************************************************************************/
 
 #include "plugin.h"
 
 /* 配置 */
+#ifndef LCD_WIDTH
 #define LCD_WIDTH       220
+#endif
+#ifndef LCD_HEIGHT
 #define LCD_HEIGHT      176
+#endif
 #define MAX_BOOKMARKS   5
 #define SETTINGS_FILE   "/ebook/config/settings.cfg"
 #define READ_BUFFER_SIZE (4 * 1024)   /* 渲染缓冲区 */
@@ -475,7 +479,7 @@ static void render_page(int offset)
     rb->lcd_clear_display();
 
     /* 标题栏 */
-    long tick = *rb->current_tick;   /* 解引用 */
+    long tick = *rb->current_tick;
     if (tick - last_toggle_tick >= HZ * 5) {
         last_toggle_tick = tick;
         show_mem = !show_mem;
@@ -510,7 +514,6 @@ static void render_page(int offset)
             } else {
                 line_y++;
             }
-            /* 跳过 \r\n 组合 */
             if (c == '\r' && *(p+1) == '\n') { p++; }
             else if (c == '\n' && *(p+1) == '\r') { p++; }
             p++;
@@ -590,7 +593,6 @@ static void go_next_page(void)
 {
     LOG_INFO("go_next_page from offset %d", current_file_offset);
 
-    /* 1. 尝试从缓存中查找下一页 */
     int idx = cache_find_next(current_file_offset);
     if (idx >= 0) {
         int next_off = page_offsets[idx];
@@ -604,7 +606,6 @@ static void go_next_page(void)
         }
     }
 
-    /* 2. 缓存未命中，计算下一页偏移量（不渲染） */
     int next_off = compute_next_offset(current_file_offset);
     if (next_off < 0 || next_off >= file_size) {
         LOG_WARN("End of file reached at offset %d", current_file_offset);
@@ -612,9 +613,8 @@ static void go_next_page(void)
         return;
     }
 
-    /* 3. 跳转并渲染 */
     current_file_offset = next_off;
-    cache_add_offset(current_file_offset);   /* 加入缓存 */
+    cache_add_offset(current_file_offset);
     render_page(current_file_offset);
     LOG_INFO("go_next_page: computed next offset %d", current_file_offset);
 }
@@ -623,7 +623,6 @@ static void go_prev_page(void)
 {
     LOG_INFO("go_prev_page from offset %d", current_file_offset);
 
-    /* 1. 尝试从缓存中查找上一页 */
     int idx = cache_find_prev(current_file_offset);
     if (idx >= 0) {
         int prev_off = page_offsets[idx];
@@ -637,7 +636,6 @@ static void go_prev_page(void)
         }
     }
 
-    /* 2. 缓存未命中，计算上一页偏移量（扫描） */
     int prev_off = compute_prev_offset(current_file_offset);
     if (prev_off < 0 || prev_off >= current_file_offset) {
         LOG_WARN("Start of file reached at offset %d", current_file_offset);
@@ -645,9 +643,8 @@ static void go_prev_page(void)
         return;
     }
 
-    /* 3. 跳转并渲染 */
     current_file_offset = prev_off;
-    cache_add_offset(current_file_offset);   /* 加入缓存 */
+    cache_add_offset(current_file_offset);
     render_page(current_file_offset);
     LOG_INFO("go_prev_page: computed prev offset %d", current_file_offset);
 }
@@ -781,8 +778,9 @@ static int show_menu(const menu_item_t *items, int count, const char *title, int
         } else if (button == BUTTON_SELECT) {
             int ret = items[selected].func(items[selected].arg);
             if (ret == -1) return -1;
-            if (ret == 1) return 1;
+            if (ret == 1)  return 1;
             if (ret == -2) return -2;
+            if (ret == -3) return -3;   /* 设置已改变，通知上层重建菜单 */
         } else if (button == BUTTON_MENU) {
             if (menu_level == 0) {
                 continue;
@@ -795,11 +793,10 @@ static int show_menu(const menu_item_t *items, int count, const char *title, int
 
 /* ---- 菜单功能 ---- */
 
-/* 增强的文件信息 */
 static int file_info_func(void *arg)
 {
     (void)arg;
-    char info[7][32];  /* 增加行数 */
+    char info[7][32];
     get_full_display_name(current_file, info[0], sizeof(info[0]));
     rb->snprintf(info[1], sizeof(info[1]), "大小: %d 字节 (%dKB)", file_size, file_size/1024);
     rb->snprintf(info[2], sizeof(info[2]), "偏移: %d", current_file_offset);
@@ -807,8 +804,7 @@ static int file_info_func(void *arg)
     rb->snprintf(info[3], sizeof(info[3]), "进度: %d%%", percent);
     rb->snprintf(info[4], sizeof(info[4]), "缓存页: %d", cache_count);
     rb->snprintf(info[5], sizeof(info[5]), "夜间模式: %s", night_mode ? "开" : "关");
-    /* 预留一行备用，或显示版本 */
-    rb->snprintf(info[6], sizeof(info[6]), "版本: 8.3");
+    rb->snprintf(info[6], sizeof(info[6]), "版本: 8.5");
 
     int button;
     while (1) {
@@ -940,7 +936,6 @@ static int bookmark_list_func(void *arg)
     }
 }
 
-/* ---- 偏移量跳转 ---- */
 static int jump_offset_func(void *arg)
 {
     (void)arg;
@@ -1030,11 +1025,18 @@ static int jump_offset_func(void *arg)
 static int night_mode_func(void *arg)
 {
     (void)arg;
+
     night_mode = !night_mode;
     save_global_settings();
-    refresh_current_page();
-    LOG_INFO("Night mode toggled to %d", night_mode ? 1 : 0);
-    return 0;
+
+    /* 重新读取设置，确保全局状态与配置文件一致 */
+    load_global_settings();
+
+    /* 立即应用新配色，并让主菜单重建后重绘 */
+    apply_color_scheme();
+
+    LOG_INFO("Night mode toggled to %d, request menu redraw", night_mode ? 1 : 0);
+    return -3;   /* 通知 show_main_menu_with_exit() 重建菜单 */
 }
 
 static int exit_func(void *arg)
@@ -1052,55 +1054,92 @@ static int return_to_reading_func(void *arg)
     return -2;
 }
 
-/* ---- 主菜单（修复夜间模式显示） ---- */
 static int show_main_menu_with_exit(void)
 {
-    char night_text[20];
-    rb->snprintf(night_text, sizeof(night_text), "夜间模式 [%s]", night_mode ? "开" : "关");
-    const menu_item_t items[] = {
-        {"返回阅读", return_to_reading_func, NULL},
-        {"文件信息", file_info_func, NULL},
-        {"书签", bookmark_list_func, NULL},
-        {"跳转到偏移量", jump_offset_func, NULL},
-        {night_text, night_mode_func, NULL},
-        {"退出", exit_func, NULL}
-    };
     while (1) {
+        char night_text[20];
+        rb->snprintf(night_text, sizeof(night_text),
+                     "夜间模式 [%s]", night_mode ? "开" : "关");
+
+        const menu_item_t items[] = {
+            {"返回阅读",       return_to_reading_func, NULL},
+            {"文件信息",       file_info_func,         NULL},
+            {"书签",           bookmark_list_func,     NULL},
+            {"跳转到偏移量",   jump_offset_func,       NULL},
+            {night_text,       night_mode_func,        NULL},
+            {"退出",           exit_func,              NULL}
+        };
+
         int ret = show_menu(items, 6, "主菜单", 0);
+
         if (ret == 1) {
             return 1;
         } else if (ret == -2) {
             return -2;
+        } else if (ret == -3) {
+            continue;   /* 夜间模式已切换，重建菜单并重绘 */
         }
     }
 }
 
-/* ---------- 开屏画面 ---------- */
+/* ---------- 开屏画面（像素居中 + 机型自适应） ---------- */
 static void show_splash_screen(void)
 {
     rb->lcd_set_foreground(LCD_BLACK);
     rb->lcd_set_background(LCD_WHITE);
     rb->lcd_clear_display();
 
+    /* 根据编译目标自动切换机型行 */
+#if defined(APPLE_IPODVIDEO) || defined(IPOD_VIDEO)
+    const char *model_line = "For iPod Video";
+#elif defined(IPOD_6G) || defined(IPOD_CLASSIC)
+    const char *model_line = "For iPod Classic";
+#elif defined(IPOD_COLOR)
+    const char *model_line = "For iPod Color";
+#elif defined(IPOD_4G)
+    const char *model_line = "For iPod 4G";
+#elif defined(IPOD_NANO)
+    const char *model_line = "For iPod Nano";
+#else
+    const char *model_line = "For Rockbox";
+#endif
+
     const char *lines[] = {
         "Lemon E-Book",
-        "For iPod Color",
+        model_line,
         "Ver.0.9Beta"
     };
     int num_lines = 3;
-    int y_offset = (lines_per_screen - num_lines) / 2;
+
+    /* 第一步：测量每一行的实际像素尺寸 */
+    int line_widths[3];
+    int line_heights[3];
+    int total_height = 0;
 
     for (int i = 0; i < num_lines; i++) {
-        int w, h;
+        int w = 0, h = 0;
         rb->font_getstringsize((const unsigned char *)lines[i], &w, &h, FONT_UI);
-        int x = (LCD_WIDTH - w) / 2 / font_width;
+        line_widths[i] = w;
+        line_heights[i] = h;
+        total_height += h;
+    }
+
+    /* 第二步：整体垂直居中 */
+    int y = (LCD_HEIGHT - total_height) / 2;
+    if (y < 0) y = 0;
+
+    /* 第三步：逐行按像素坐标水平居中绘制，避免多字体网格错位 */
+    for (int i = 0; i < num_lines; i++) {
+        int x = (LCD_WIDTH - line_widths[i]) / 2;
         if (x < 0) x = 0;
-        rb->lcd_puts(x, y_offset + i, (const unsigned char *)lines[i]);
+        rb->lcd_putsxy(x, y, (const unsigned char *)lines[i]);
+        y += line_heights[i];
     }
 
     rb->lcd_update();
 
-    long start_tick = *rb->current_tick;  /* 解引用 */
+    /* 等待 2 秒或按键跳过 */
+    long start_tick = *rb->current_tick;
     while (*rb->current_tick - start_tick < HZ * 2) {
         int btn = rb->button_get_w_tmo(HZ/10);
         if (btn != BUTTON_NONE) break;
@@ -1152,7 +1191,7 @@ static int file_browser(void)
     long last_scroll_tick = 0;
     int scroll_step = 1;
     int last_scroll_button = 0;
-    int prev_selected = -1;  /* 用于检测选中项是否变化，控制滚动重启 */
+    int prev_selected = -1;
 
     LOG_INFO("File browser started, scanning /ebook");
     dir = rb->opendir("/ebook");
@@ -1183,13 +1222,11 @@ static int file_browser(void)
     bool exit_plugin = false;
     int button;
     while (!exit_plugin) {
-        /* 如果选中的文件名变化，则停止旧滚动并重置 */
         if (selected != prev_selected) {
             rb->lcd_scroll_stop();
             prev_selected = selected;
         }
 
-        /* 绘制文件列表 */
         rb->lcd_clear_display();
         int max_display = lines_per_screen - 1;
         int start_idx = 0;
@@ -1199,7 +1236,6 @@ static int file_browser(void)
             get_full_display_name(file_list[start_idx + i], dname, sizeof(dname));
             if (start_idx + i == selected) {
                 rb->lcd_puts(0, i, (const unsigned char *)">");
-                /* 使用滚动显示长文件名 */
                 rb->lcd_puts_scroll(1, i, (const unsigned char *)dname);
             } else {
                 rb->lcd_puts(0, i, (const unsigned char *)" ");
@@ -1208,7 +1244,6 @@ static int file_browser(void)
         }
         rb->lcd_update();
 
-        /* 等待按键，超时缩短使滚动更新及时（但不再手动 step） */
         button = rb->button_get_w_tmo(HZ/10);
 
         if (button == BUTTON_SCROLL_BACK) {
@@ -1285,7 +1320,6 @@ static int file_browser(void)
                         LOG_INFO("Quick save bookmark 1 at offset %d", current_file_offset);
                     }
                 }
-                /* 退出阅读后，停止滚动并恢复列表状态 */
                 rb->lcd_scroll_stop();
             }
         } else if (button == BUTTON_MENU) {
@@ -1294,7 +1328,6 @@ static int file_browser(void)
         }
     }
 
-    /* 退出前停止滚动 */
     rb->lcd_scroll_stop();
     return PLUGIN_OK;
 }
@@ -1316,7 +1349,8 @@ enum plugin_status plugin_start(const void* parameter)
     if (font_width <= 0) font_width = 8;
     lines_per_screen = LCD_HEIGHT / font_height;
     if (lines_per_screen < 3) lines_per_screen = 3;
-    LOG_INFO("Font: width=%d, height=%d, lines=%d", font_width, font_height, lines_per_screen);
+    LOG_INFO("LCD: %dx%d, Font: width=%d, height=%d, lines=%d",
+             LCD_WIDTH, LCD_HEIGHT, font_width, font_height, lines_per_screen);
 
     render_buffer = rb->plugin_get_buffer(&render_buf_size);
     if (render_buf_size < 1024) {
@@ -1331,7 +1365,6 @@ enum plugin_status plugin_start(const void* parameter)
     if (render_buf_size > 8192) render_buf_size = 8192;
     LOG_INFO("Render buffer size: %d bytes", (int)render_buf_size);
 
-    /* 显示开屏画面（持续2秒或按键跳过） */
     show_splash_screen();
 
     int ret = file_browser();

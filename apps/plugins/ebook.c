@@ -1,9 +1,9 @@
 /***************************************************************************
  *             ebook.c - 电子书阅读器 (iPod Color / Video / Classic)
- *  版本：8.8 滚轮改用 wheel_status 轮询，支持快速滚动一次多步
+ *  版本：8.9 修复章节扫描行长度硬限制与中文数字多位数解析
  *  功能：文件浏览、UTF-8 渲染、夜间模式、5个书签、精确翻页、偏移量缓存、
  *        章节扫描（首次扫描写入缓存，MD5 校验后复用）、目录列表/数字输入跳转
- *  内存：缓存 41 页偏移量 + 静态章节数组（200 章 × 32B）+ 章节缓存文件
+ *  内存：缓存 41 页偏移量 + 静态章节数组（200 章 × 64B）+ 章节缓存文件
  *  按键：左/右键翻页，MENU 主菜单，PLAY 快速书签
  *  目录：SELECT 切换列表/数字模式，PLAY 跳转，MENU 返回
  *  滚轮：基于 wheel_status 绝对位置轮询，快速滚动一次多步
@@ -31,7 +31,7 @@
 #define CACHE_SIZE      41
 
 #define MAX_CHAPTERS    200
-#define CHAP_TITLE_LEN  32
+#define CHAP_TITLE_LEN  64
 #define MD5_HEX_LEN     32
 
 /* 全局变量 */
@@ -647,10 +647,54 @@ static void go_prev_page(void)
 
 /* ---------- 章节扫描 ---------- */
 
+/* 解析中文数字，p 指向数字起始，end 是行尾。
+   成功返回 >=1 的数值，*bytes_out 为消耗字节数；无数字返回 0。 */
+static int parse_chinese_number(const char *p, const char *end, int *bytes_out)
+{
+    int section = 0;
+    int num = 0;
+    int consumed = 0;
+
+    while (p + 3 <= end) {
+        const unsigned char *u = (const unsigned char *)p;
+        int d = -1, unit = 0;
+
+        if      (u[0] == 0xE4 && u[1] == 0xB8 && u[2] == 0x80) d = 1;
+        else if (u[0] == 0xE4 && u[1] == 0xBA && u[2] == 0x8C) d = 2;
+        else if (u[0] == 0xE4 && u[1] == 0xB8 && u[2] == 0x89) d = 3;
+        else if (u[0] == 0xE5 && u[1] == 0x9B && u[2] == 0x9B) d = 4;
+        else if (u[0] == 0xE4 && u[1] == 0xBA && u[2] == 0x94) d = 5;
+        else if (u[0] == 0xE5 && u[1] == 0x85 && u[2] == 0xAD) d = 6;
+        else if (u[0] == 0xE4 && u[1] == 0xB8 && u[2] == 0x83) d = 7;
+        else if (u[0] == 0xE5 && u[1] == 0x85 && u[2] == 0xAB) d = 8;
+        else if (u[0] == 0xE4 && u[1] == 0xB9 && u[2] == 0x9D) d = 9;
+        else if (u[0] == 0xE5 && u[1] == 0x8D && u[2] == 0x81) unit = 10;
+        else if (u[0] == 0xE7 && u[1] == 0x99 && u[2] == 0xBE) unit = 100;
+        else if (u[0] == 0xE5 && u[1] == 0x8D && u[2] == 0x83) unit = 1000;
+        else if (u[0] == 0xE9 && u[1] == 0x9B && u[2] == 0xB6) { p += 3; consumed += 3; continue; }
+        else break;
+
+        p += 3;
+        consumed += 3;
+
+        if (d > 0) {
+            num = d;
+        } else {
+            if (num == 0) num = 1;
+            section += num * unit;
+            num = 0;
+        }
+    }
+
+    *bytes_out = consumed;
+    int total = section + num;
+    return (total > 0) ? total : 0;
+}
+
 static int match_chapter_line(const char *line, int len,
                               char *title, size_t title_size, int *num_out)
 {
-    if (len <= 0 || len > 60) return 0;
+    if (len <= 0 || len > 200) return 0;
 
     unsigned char last = (unsigned char)line[len - 1];
     if (last == '.' || last == '!' || last == '?' || last == ';' || last == ',') return 0;
@@ -663,6 +707,7 @@ static int match_chapter_line(const char *line, int len,
 
     int evidence_pos = -1, evidence_len = 0, num = -1;
 
+    /* 中文序号：行内任意位置 "第<数字>章/回/节/卷/话/篇" */
     {
         const char *p = line;
         const char *end = line + len;
@@ -675,17 +720,13 @@ static int match_chapter_line(const char *line, int len,
                     q++; ok = 1;
                 }
                 if (!ok && q + 3 <= end) {
-                    const unsigned char *cn = (const unsigned char *)q;
-                    if (cn[0] == 0xE4 && cn[1] == 0xB8 && cn[2] == 0x80) { value = 1; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE4 && cn[1] == 0xBA && cn[2] == 0x8C) { value = 2; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE4 && cn[1] == 0xB8 && cn[2] == 0x89) { value = 3; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE5 && cn[1] == 0x9B && cn[2] == 0x9B) { value = 4; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE4 && cn[1] == 0xBA && cn[2] == 0x94) { value = 5; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE5 && cn[1] == 0x85 && cn[2] == 0xAD) { value = 6; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE4 && cn[1] == 0xB8 && cn[2] == 0x83) { value = 7; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE5 && cn[1] == 0x85 && cn[2] == 0xAB) { value = 8; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE4 && cn[1] == 0xB9 && cn[2] == 0x9D) { value = 9; q += 3; ok = 1; }
-                    else if (cn[0] == 0xE5 && cn[1] == 0x8D && cn[2] == 0x81) { value = 10; q += 3; ok = 1; }
+                    int cn_bytes = 0;
+                    int cn_val = parse_chinese_number(q, end, &cn_bytes);
+                    if (cn_val > 0) {
+                        value = cn_val;
+                        q += cn_bytes;
+                        ok = 1;
+                    }
                 }
                 if (ok && q + 3 <= end) {
                     if ((unsigned char)q[0] == 0xE7 && (unsigned char)q[1] == 0xAB && (unsigned char)q[2] == 0xA0) {
@@ -730,6 +771,7 @@ static int match_chapter_line(const char *line, int len,
         }
     }
 
+    /* 英文序号：行内任意位置 "CHAPTER N" */
     if (evidence_pos < 0) {
         const char *p = line;
         const char *end = line + len;
@@ -761,6 +803,7 @@ static int match_chapter_line(const char *line, int len,
 
     if (evidence_pos < 0) return 0;
 
+    /* 引用模式排除：证据后紧跟逗号，且逗号后还有 >10 字节文本 */
     const char *after = line + evidence_pos + evidence_len;
     const char *line_end = line + len;
     while (after < line_end && (*after == ' ' || *after == '\t')) after++;
@@ -1173,9 +1216,9 @@ static int toc_func(void *arg)
         }
     }
 
-    int mode = 0;       /* 0=列表 1=数字输入 */
+    int mode = 0;
     int button;
-    int last_wheel = -1;    /* 滚轮上次绝对位置 */
+    int last_wheel = -1;
 
     char input[8] = "";
     int cursor_pos = 0;
@@ -1221,7 +1264,6 @@ static int toc_func(void *arg)
             button = rb->button_get_w_tmo(HZ/10);
 
 #ifdef HAVE_WHEEL_POSITION
-            /* 主动轮询滚轮绝对位置，快速滚动一次多步 */
             {
                 int wheel = rb->wheel_status();
                 if (wheel >= 0 && last_wheel >= 0) {
@@ -1352,7 +1394,7 @@ static int file_info_func(void *arg)
     rb->snprintf(info[4], sizeof(info[4]), "缓存页: %d", cache_count);
     rb->snprintf(info[5], sizeof(info[5]), "章节: %d", chapter_count);
     rb->snprintf(info[6], sizeof(info[6]), "夜间模式: %s", night_mode ? "开" : "关");
-    rb->snprintf(info[7], sizeof(info[7]), "版本: 8.8");
+    rb->snprintf(info[7], sizeof(info[7]), "版本: 8.9");
 
     int button;
     while (1) {
@@ -1732,7 +1774,7 @@ static int file_browser(void)
     char file_list[128][MAX_PATH];
     int num_files = 0, selected = 0;
     int prev_selected = -1;
-    int last_wheel = -1;    /* 滚轮上次绝对位置 */
+    int last_wheel = -1;
 
     LOG_INFO("File browser started, scanning /ebook");
     dir = rb->opendir("/ebook");
@@ -1788,7 +1830,6 @@ static int file_browser(void)
         button = rb->button_get_w_tmo(HZ/10);
 
 #ifdef HAVE_WHEEL_POSITION
-        /* 主动轮询滚轮绝对位置，快速滚动一次多步 */
         {
             int wheel = rb->wheel_status();
             if (wheel >= 0 && last_wheel >= 0) {
@@ -1889,7 +1930,7 @@ enum plugin_status plugin_start(const void* parameter)
         }
         return PLUGIN_ERROR;
     }
-    if (render_buf_size > 8192) render_buf_size = 8192;
+    if (render_buf_size > 32768) render_buf_size = 32768;
     LOG_INFO("Render buffer size: %d bytes", (int)render_buf_size);
 
     show_splash_screen();

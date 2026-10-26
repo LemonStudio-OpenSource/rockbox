@@ -196,6 +196,7 @@ static int utf8_char_len(unsigned char c)
 /* ---------- 颜色方案 ---------- */
 static void apply_color_scheme(void)
 {
+#if LCD_DEPTH > 1 /* 单色目标没有前景/背景色 API（见 apps/plugin.h:253） */
     if (night_mode) {
         rb->lcd_set_foreground(LCD_WHITE);
         rb->lcd_set_background(LCD_BLACK);
@@ -203,6 +204,7 @@ static void apply_color_scheme(void)
         rb->lcd_set_foreground(LCD_BLACK);
         rb->lcd_set_background(LCD_WHITE);
     }
+#endif
 }
 
 /* ---------- 设置读写 ---------- */
@@ -1679,8 +1681,10 @@ static int show_main_menu_with_exit(void)
 /* ---------- 开屏画面 ---------- */
 static void show_splash_screen(void)
 {
+#if LCD_DEPTH > 1 /* 单色目标没有前景/背景色 API（见 apps/plugin.h:253） */
     rb->lcd_set_foreground(LCD_BLACK);
     rb->lcd_set_background(LCD_WHITE);
+#endif
     rb->lcd_clear_display();
 
 #if defined(APPLE_IPODVIDEO) || defined(IPOD_VIDEO)
@@ -1736,8 +1740,782 @@ static void show_splash_screen(void)
 }
 
 /* ---------- 打开书籍 ---------- */
+/* ==================== EPUB 阅读支持 ====================
+ *
+ * 内存策略：EPUB 的解压工作区来自 plugin_get_buffer() 中
+ * “渲染缓冲之后、文件列表之前”的那一段（见 plugin_start()），
+ * 绝不触碰音乐缓冲区，因此播放中的音频缓冲区不会被抢占。
+ *
+ * 初次打开 .epub 时把它整本转成同名的 .txt 缓存，之后所有阅读、
+ * 翻页、书签、目录功能都复用现有纯文本通路，风险最小。
+ *
+ * DEFLATE 复用 imageviewer 的 tiny inflate（zlib 许可，无 malloc）。
+ */
+#include "imageviewer/png/tinflate.c"
+
+#define EPUB_LOCAL_SIG      0x04034b50UL
+#define EPUB_CD_SIG         0x02014b50UL
+#define EPUB_EOCD_SIG       0x06054b50UL
+#define EPUB_MAX_ITEMS      128
+#define EPUB_ID_LEN         40
+#define EPUB_HREF_LEN       152
+#define EPUB_MANIFEST_SIZE  (EPUB_MAX_ITEMS * (EPUB_ID_LEN + EPUB_HREF_LEN) + 256)
+
+static unsigned char *epub_work = NULL;     /* 解压工作区（非音乐缓冲区） */
+static size_t epub_work_size = 0;
+
+typedef struct
+{
+    int fd;
+    unsigned int cd_offset;
+    unsigned int cd_count;
+} epub_zip_t;
+
+/* ---------- 小工具 ---------- */
+static unsigned int epub_le16(const unsigned char *p)
+{
+    return (unsigned int)p[0] | ((unsigned int)p[1] << 8);
+}
+
+static unsigned long epub_le32(const unsigned char *p)
+{
+    return (unsigned long)p[0] | ((unsigned long)p[1] << 8) |
+           ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+}
+
+static int epub_bytes_eq(const char *a, const char *b, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        if (a[i] != b[i])
+            return 0;
+    }
+    return 1;
+}
+
+static int epub_ci_eq(const char *a, const char *b, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        char ca = a[i];
+        char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z')
+            ca += 32;
+        if (cb >= 'A' && cb <= 'Z')
+            cb += 32;
+        if (ca != cb)
+            return 0;
+    }
+    return 1;
+}
+
+static const char *epub_memchr(const char *s, int len, char c)
+{
+    int i;
+    for (i = 0; i < len; i++) {
+        if (s[i] == c)
+            return s + i;
+    }
+    return NULL;
+}
+
+static const char *epub_memmem(const char *hay, int haylen, const char *needle)
+{
+    int nlen = rb->strlen(needle);
+    int i;
+    if (nlen <= 0 || haylen < nlen)
+        return NULL;
+    for (i = 0; i + nlen <= haylen; i++) {
+        if (hay[i] == needle[0] && epub_bytes_eq(hay + i, needle, nlen))
+            return hay + i;
+    }
+    return NULL;
+}
+
+static int epub_utf8_encode(unsigned long cp, unsigned char *out)
+{
+    if (cp < 0x80) {
+        out[0] = (unsigned char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (unsigned char)(0xC0 | (cp >> 6));
+        out[1] = (unsigned char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (unsigned char)(0xE0 | (cp >> 12));
+        out[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (unsigned char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (unsigned char)(0xF0 | (cp >> 18));
+    out[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (unsigned char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+/* ---------- 输出缓冲（避免逐字节写盘） ---------- */
+#define EPUB_OUTBUF_SIZE 512
+static char epub_outbuf[EPUB_OUTBUF_SIZE];
+static int epub_outlen = 0;
+static int epub_outfd = -1;
+
+static void epub_flush(void)
+{
+    if (epub_outlen > 0 && epub_outfd >= 0) {
+        rb->write(epub_outfd, epub_outbuf, epub_outlen);
+        epub_outlen = 0;
+    }
+}
+
+static void epub_put(const char *s, int n)
+{
+    while (n > 0) {
+        int room = EPUB_OUTBUF_SIZE - epub_outlen;
+        int take = (n < room) ? n : room;
+        rb->memcpy(epub_outbuf + epub_outlen, s, take);
+        epub_outlen += take;
+        s += take;
+        n -= take;
+        if (epub_outlen >= EPUB_OUTBUF_SIZE)
+            epub_flush();
+    }
+}
+
+static void epub_puts(const char *s)
+{
+    epub_put(s, rb->strlen(s));
+}
+
+/* ---------- ZIP ---------- */
+static bool epub_zip_open(epub_zip_t *z, int fd)
+{
+    unsigned char buf[1024];
+    long fsize;
+    int n, i;
+
+    rb->lseek(fd, 0, SEEK_END);
+    fsize = rb->lseek(fd, 0, SEEK_CUR);
+    if (fsize < 22)
+        return false;
+    n = (fsize > (long)sizeof(buf)) ? (int)sizeof(buf) : (int)fsize;
+    rb->lseek(fd, fsize - n, SEEK_SET);
+    if (rb->read(fd, buf, n) != n)
+        return false;
+    for (i = n - 22; i >= 0; i--) {
+        if (epub_le32(buf + i) == EPUB_EOCD_SIG) {
+            z->fd = fd;
+            z->cd_count = epub_le16(buf + i + 10);
+            z->cd_offset = (unsigned int)epub_le32(buf + i + 16);
+            if (z->cd_offset > 0 && z->cd_offset < (unsigned long)fsize && z->cd_count > 0)
+                return true;
+            return false;
+        }
+    }
+    return false;
+}
+
+static bool epub_zip_find(const epub_zip_t *z, const char *name,
+                          unsigned int *method, unsigned int *comp_size,
+                          unsigned int *raw_size, unsigned int *data_off)
+{
+    unsigned char hdr[46];
+    char nbuf[EPUB_HREF_LEN + 8];
+    unsigned int i;
+    unsigned long pos = z->cd_offset;
+    int namelen = rb->strlen(name);
+
+    for (i = 0; i < z->cd_count; i++) {
+        unsigned int nl, el, cl;
+        unsigned long lho;
+
+        rb->lseek(z->fd, (off_t)pos, SEEK_SET);
+        if (rb->read(z->fd, hdr, 46) != 46)
+            return false;
+        if (epub_le32(hdr) != EPUB_CD_SIG)
+            return false;
+        nl = epub_le16(hdr + 28);
+        el = epub_le16(hdr + 30);
+        cl = epub_le16(hdr + 32);
+        lho = epub_le32(hdr + 42);
+
+        if (nl < sizeof(nbuf)) {
+            if (rb->read(z->fd, nbuf, (int)nl) != (int)nl)
+                return false;
+            nbuf[nl] = '\0';
+            if ((int)nl == namelen && rb->strcmp(nbuf, name) == 0) {
+                unsigned char lh[30];
+                unsigned int lnl, lel;
+                *method = epub_le16(hdr + 10);
+                *comp_size = (unsigned int)epub_le32(hdr + 20);
+                *raw_size = (unsigned int)epub_le32(hdr + 24);
+                rb->lseek(z->fd, (off_t)lho, SEEK_SET);
+                if (rb->read(z->fd, lh, 30) != 30)
+                    return false;
+                if (epub_le32(lh) != EPUB_LOCAL_SIG)
+                    return false;
+                lnl = epub_le16(lh + 26);
+                lel = epub_le16(lh + 28);
+                *data_off = (unsigned int)(lho + 30 + lnl + lel);
+                return true;
+            }
+        }
+        pos += 46 + nl + el + cl;
+    }
+    return false;
+}
+
+/* 解压一个条目。返回 0 成功，负值为错误码。 */
+static int epub_zip_extract(const epub_zip_t *z, const char *name,
+                            unsigned char *out, unsigned int out_cap,
+                            unsigned char *scratch, unsigned int scratch_cap,
+                            unsigned int *out_len)
+{
+    unsigned int method, comp, raw, off;
+
+    *out_len = 0;
+    if (!epub_zip_find(z, name, &method, &comp, &raw, &off))
+        return -1;
+    if (comp == 0 || raw == 0)
+        return -2;
+    if (comp > scratch_cap || raw > out_cap)
+        return -2;
+    rb->lseek(z->fd, (off_t)off, SEEK_SET);
+    if (rb->read(z->fd, scratch, (int)comp) != (int)comp)
+        return -3;
+    if (method == 0) {
+        rb->memcpy(out, scratch, comp);
+        *out_len = comp;
+        return 0;
+    }
+    if (method == 8) {
+        unsigned int dst = raw;
+        if (tinf_uncompress(out, &dst, scratch, comp) != TINF_OK)
+            return -4;
+        *out_len = dst;
+        return 0;
+    }
+    return -5;
+}
+
+/* ---------- XML 属性 ---------- */
+static bool epub_get_attr(const char *tagstart, const char *tagend,
+                          const char *attr, char *out, int out_size)
+{
+    int alen = rb->strlen(attr);
+    const char *p = tagstart;
+
+    while (p + alen < tagend) {
+        if (epub_bytes_eq(p, attr, alen) && p[alen] == '=') {
+            const char *q = p + alen + 1;
+            char quote = 0;
+            int n = 0;
+            if (q < tagend && (*q == '"' || *q == '\''))
+                quote = *q++;
+            while (q < tagend && n < out_size - 1) {
+                if (quote) {
+                    if (*q == quote)
+                        break;
+                } else if (*q == ' ' || *q == '>' || *q == '/') {
+                    break;
+                }
+                out[n++] = *q++;
+            }
+            out[n] = '\0';
+            return n > 0;
+        }
+        p++;
+    }
+    return false;
+}
+
+/* ---------- HTML 转纯文本 ---------- */
+typedef struct
+{
+    const char *name;
+    const char *utf8;
+} epub_entity_t;
+
+static const epub_entity_t epub_entities[] =
+{
+    { "amp", "&" }, { "lt", "<" }, { "gt", ">" }, { "quot", "\"" }, { "apos", "'" },
+    { "nbsp", " " }, { "ensp", " " }, { "emsp", " " }, { "shy", "" },
+    { "mdash", "\xe2\x80\x94" }, { "ndash", "\xe2\x80\x93" }, { "hellip", "\xe2\x80\xa6" },
+    { "ldquo", "\xe2\x80\x9c" }, { "rdquo", "\xe2\x80\x9d" },
+    { "lsquo", "\xe2\x80\x98" }, { "rsquo", "\xe2\x80\x99" },
+    { "bull", "\xe2\x80\xa2" }, { "middot", "\xc2\xb7" },
+    { "copy", "\xc2\xa9" }, { "reg", "\xc2\xae" }, { "trade", "\xe2\x84\xa2" },
+    { "times", "\xc3\x97" }, { "divide", "\xc3\xb7" },
+    { "laquo", "\xc2\xab" }, { "raquo", "\xc2\xbb" },
+    { "deg", "\xc2\xb0" }, { "plusmn", "\xc2\xb1" },
+    { NULL, NULL }
+};
+
+static const char *epub_entity_lookup(const char *name)
+{
+    int i;
+    for (i = 0; epub_entities[i].name != NULL; i++) {
+        if (rb->strcmp(epub_entities[i].name, name) == 0)
+            return epub_entities[i].utf8;
+    }
+    return NULL;
+}
+
+static bool epub_tag_is_block(const char *name, int nlen)
+{
+    static const char *blocks[] =
+    {
+        "p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr",
+        "table", "section", "article", "blockquote", "title", "hr", "ul", "ol",
+        "body", "html", "pre", "figure", "figcaption", "td", "th", "dd", "dt", NULL
+    };
+    int i;
+    for (i = 0; blocks[i] != NULL; i++) {
+        int l = rb->strlen(blocks[i]);
+        if (l == nlen && epub_ci_eq(name, blocks[i], nlen))
+            return true;
+    }
+    return false;
+}
+
+static void epub_html_to_text(const char *buf, int len)
+{
+    int i = 0;
+    bool skip = false;
+    int pending_nl = 0;
+
+    while (i < len) {
+        if (buf[i] == '<') {
+            int j = i + 1;
+            bool closing = false;
+            const char *name;
+            int nlen;
+
+            if (j < len && buf[j] == '/') {
+                closing = true;
+                j++;
+            }
+            name = buf + j;
+            while (j < len && buf[j] != '>' && buf[j] != ' ' && buf[j] != '\t' &&
+                   buf[j] != '\n' && buf[j] != '\r' && buf[j] != '/')
+                j++;
+            nlen = (int)(buf + j - name);
+
+            if (nlen == 6 && epub_ci_eq(name, "script", 6))
+                skip = !closing;
+            else if (nlen == 5 && epub_ci_eq(name, "style", 5))
+                skip = !closing;
+            else if (!skip && epub_tag_is_block(name, nlen))
+                pending_nl = 1;
+
+            while (i < len && buf[i] != '>')
+                i++;
+            if (i < len)
+                i++;
+            continue;
+        }
+
+        if (buf[i] == '&') {
+            int j = i + 1;
+            char ent[16];
+            int n = 0;
+            while (j < len && n < 15 && buf[j] != ';' && buf[j] != ' ' &&
+                   buf[j] != '<' && buf[j] != '&' && buf[j] != '\n')
+                ent[n++] = buf[j++];
+            ent[n] = '\0';
+            if (j < len && buf[j] == ';' && n > 0) {
+                const char *rep = epub_entity_lookup(ent);
+                if (rep != NULL) {
+                    if (pending_nl) {
+                        epub_puts("\n");
+                        pending_nl = 0;
+                    }
+                    if (!skip)
+                        epub_puts(rep);
+                    i = j + 1;
+                    continue;
+                }
+                if (ent[0] == '#' && n > 1) {
+                    unsigned long v = 0;
+                    int k;
+                    bool valid = true;
+                    if (ent[1] == 'x' || ent[1] == 'X') {
+                        for (k = 2; k < n; k++) {
+                            char ch = ent[k];
+                            int d;
+                            if (ch >= '0' && ch <= '9')
+                                d = ch - '0';
+                            else if (ch >= 'a' && ch <= 'f')
+                                d = ch - 'a' + 10;
+                            else if (ch >= 'A' && ch <= 'F')
+                                d = ch - 'A' + 10;
+                            else {
+                                valid = false;
+                                break;
+                            }
+                            v = v * 16 + (unsigned long)d;
+                        }
+                    } else {
+                        for (k = 1; k < n; k++) {
+                            if (ent[k] < '0' || ent[k] > '9') {
+                                valid = false;
+                                break;
+                            }
+                            v = v * 10 + (unsigned long)(ent[k] - '0');
+                        }
+                    }
+                    if (valid && v > 0 && v < 0x110000UL) {
+                        unsigned char ub[4];
+                        int ul = epub_utf8_encode(v, ub);
+                        if (pending_nl) {
+                            epub_puts("\n");
+                            pending_nl = 0;
+                        }
+                        if (!skip)
+                            epub_put((const char *)ub, ul);
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+            if (pending_nl) {
+                epub_puts("\n");
+                pending_nl = 0;
+            }
+            if (!skip)
+                epub_put("&", 1);
+            i++;
+            continue;
+        }
+
+        if (!skip) {
+            /* 折叠连续空白 */
+            if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '\t') {
+                if (pending_nl) {
+                    epub_puts("\n");
+                    pending_nl = 0;
+                }
+                epub_put(" ", 1);
+            } else {
+                if (pending_nl) {
+                    epub_puts("\n");
+                    pending_nl = 0;
+                }
+                epub_put(buf + i, 1);
+            }
+        }
+        i++;
+    }
+    epub_puts("\n");
+}
+
+/* 从 <title> 或第一个 <h1>/<h2> 里取一个简短章节名 */
+static void epub_extract_title(const char *buf, int len, char *out, int out_size)
+{
+    static const char *tags[] = { "title", "h1", "h2", "h3", NULL };
+    int t;
+
+    out[0] = '\0';
+    for (t = 0; tags[t] != NULL && out[0] == '\0'; t++) {
+        int tlen = rb->strlen(tags[t]);
+        int pos = 0;
+
+        while (pos < len) {
+            const char *lt = epub_memchr(buf + pos, len - pos, '<');
+            const char *gt;
+            int after;
+            if (lt == NULL)
+                break;
+            gt = epub_memchr(lt, (int)(buf + len - lt), '>');
+            if (gt == NULL)
+                break;
+            if (gt - lt > tlen + 1 && epub_ci_eq(lt + 1, tags[t], tlen)) {
+                const char *cp = gt + 1;
+                int n = 0;
+                while (cp < buf + len && n < out_size - 1) {
+                    if (*cp == '<')
+                        break;
+                    if (*cp != '\n' && *cp != '\r' && *cp != '\t')
+                        out[n++] = *cp;
+                    cp++;
+                }
+                out[n] = '\0';
+                break;
+            }
+            after = (int)(gt + 1 - buf);
+            if (after <= pos)
+                break;
+            pos = after;
+        }
+    }
+    if (out[0] == '\0')
+        rb->strlcpy(out, "Chapter", out_size);
+}
+
+/* ---------- OPF / 导航 ---------- */
+static void epub_join_path(const char *base, const char *rel, char *out, int out_size)
+{
+    int blen = 0;
+    int i;
+    int bl = rb->strlen(base);
+
+    for (i = bl - 1; i >= 0; i--) {
+        if (base[i] == '/') {
+            blen = i + 1;
+            break;
+        }
+    }
+    if (blen + rb->strlen(rel) + 1 > out_size) {
+        out[0] = '\0';
+        return;
+    }
+    rb->memcpy(out, base, blen);
+    rb->strlcpy(out + blen, rel, out_size - blen);
+}
+
+static int epub_parse_manifest(const char *opf, int opflen, char *ids, char *hrefs)
+{
+    int count = 0;
+    const char *p = opf;
+    const char *end = opf + opflen;
+
+    while (p < end && count < EPUB_MAX_ITEMS) {
+        const char *lt = epub_memchr(p, (int)(end - p), '<');
+        const char *gt;
+        if (lt == NULL)
+            break;
+        gt = epub_memchr(lt, (int)(end - lt), '>');
+        if (gt == NULL)
+            break;
+        if (gt - lt > 5 && epub_ci_eq(lt + 1, "item", 4) &&
+            (lt[5] == ' ' || lt[5] == '\t' || lt[5] == '\n' || lt[5] == '\r' || lt[5] == '/')) {
+            char id[EPUB_ID_LEN];
+            char href[EPUB_HREF_LEN];
+            if (epub_get_attr(lt, gt, "id", id, sizeof(id)) &&
+                epub_get_attr(lt, gt, "href", href, sizeof(href))) {
+                rb->strlcpy(ids + count * EPUB_ID_LEN, id, EPUB_ID_LEN);
+                rb->strlcpy(hrefs + count * EPUB_HREF_LEN, href, EPUB_HREF_LEN);
+                count++;
+            }
+        }
+        p = gt + 1;
+    }
+    return count;
+}
+
+static int epub_parse_spine(const char *opf, int opflen, const char *ids, int idcount,
+                            unsigned char *order, int max)
+{
+    int count = 0;
+    const char *p = opf;
+    const char *end = opf + opflen;
+
+    while (p < end && count < max) {
+        const char *lt = epub_memchr(p, (int)(end - p), '<');
+        const char *gt;
+        if (lt == NULL)
+            break;
+        gt = epub_memchr(lt, (int)(end - lt), '>');
+        if (gt == NULL)
+            break;
+        if (gt - lt > 8 && epub_ci_eq(lt + 1, "itemref", 7)) {
+            char idref[EPUB_ID_LEN];
+            if (epub_get_attr(lt, gt, "idref", idref, sizeof(idref))) {
+                int k;
+                for (k = 0; k < idcount; k++) {
+                    if (rb->strcmp(ids + k * EPUB_ID_LEN, idref) == 0) {
+                        order[count++] = (unsigned char)k;
+                        break;
+                    }
+                }
+            }
+        }
+        p = gt + 1;
+    }
+    return count;
+}
+
+/* ---------- 缓存路径 ---------- */
+static bool epub_is_epub(const char *path)
+{
+    int len = rb->strlen(path);
+    return len > 5 && epub_ci_eq(path + len - 5, ".epub", 5);
+}
+
+static void epub_cache_path(const char *epub, char *out, int out_size)
+{
+    int len;
+    rb->strlcpy(out, epub, out_size);
+    len = rb->strlen(out);
+    if (len > 5 && epub_ci_eq(out + len - 5, ".epub", 5))
+        rb->strlcpy(out + len - 5, ".txt", out_size - (len - 5));
+}
+
+/* ---------- 整本转换 ---------- */
+static bool epub_convert(const char *epub_path, const char *out_path)
+{
+    epub_zip_t z;
+    int fd = -1;
+    int out_fd = -1;
+    char *ids;
+    char *hrefs;
+    unsigned char *order;
+    unsigned char *zbuf;
+    unsigned char *obuf;
+    unsigned int zcap, ocap;
+    unsigned int olen = 0;
+    int idcount, spcount, i;
+    char opf_path[EPUB_HREF_LEN];
+    char chap_path[MAX_PATH * 2];
+    bool ok = false;
+
+    if (epub_work == NULL || epub_work_size < EPUB_MANIFEST_SIZE + 32768) {
+        LOG_ERROR("EPUB: workspace too small (%d bytes)", (int)epub_work_size);
+        rb->splash(HZ, "内存不足，无法解析 EPUB");
+        return false;
+    }
+
+    ids = (char *)epub_work;
+    hrefs = ids + EPUB_MAX_ITEMS * EPUB_ID_LEN;
+    order = (unsigned char *)(hrefs + EPUB_MAX_ITEMS * EPUB_HREF_LEN);
+    zbuf = epub_work + EPUB_MANIFEST_SIZE;
+    zcap = (unsigned int)((epub_work_size - EPUB_MANIFEST_SIZE) / 2);
+    obuf = zbuf + zcap;
+    ocap = (unsigned int)(epub_work_size - EPUB_MANIFEST_SIZE - zcap);
+
+    fd = rb->open(epub_path, O_RDONLY);
+    if (fd < 0) {
+        LOG_ERROR("EPUB: cannot open %s", epub_path);
+        return false;
+    }
+    if (!epub_zip_open(&z, fd)) {
+        LOG_ERROR("EPUB: not a valid zip");
+        goto done;
+    }
+
+    /* 1) META-INF/container.xml -> OPF 路径 */
+    if (epub_zip_extract(&z, "META-INF/container.xml", obuf, ocap, zbuf, zcap, &olen) != 0) {
+        LOG_ERROR("EPUB: container.xml missing");
+        goto done;
+    }
+    opf_path[0] = '\0';
+    {
+        const char *p = epub_memmem((const char *)obuf, (int)olen, "full-path");
+        const char *end = (const char *)obuf + olen;
+        const char *lt;
+        const char *gt;
+        /* 不能搜 "rootfile"：它会先命中容器标签 <rootfiles> */
+        if (p != NULL) {
+            lt = p;
+            while (lt > (const char *)obuf && *lt != '<')
+                lt--;
+            gt = epub_memchr(p, (int)(end - p), '>');
+            if (gt != NULL)
+                epub_get_attr(lt, gt, "full-path", opf_path, sizeof(opf_path));
+        }
+    }
+    if (opf_path[0] == '\0') {
+        LOG_ERROR("EPUB: cannot locate OPF");
+        goto done;
+    }
+    LOG_INFO("EPUB OPF: %s", opf_path);
+
+    /* 2) OPF -> manifest + spine */
+    if (epub_zip_extract(&z, opf_path, obuf, ocap, zbuf, zcap, &olen) != 0) {
+        LOG_ERROR("EPUB: cannot read OPF");
+        goto done;
+    }
+    idcount = epub_parse_manifest((const char *)obuf, (int)olen, ids, hrefs);
+    spcount = epub_parse_spine((const char *)obuf, (int)olen, ids, idcount, order, EPUB_MAX_ITEMS);
+    LOG_INFO("EPUB: %d manifest items, %d spine refs", idcount, spcount);
+    if (spcount <= 0) {
+        rb->splash(HZ, "EPUB 目录为空");
+        goto done;
+    }
+
+    /* 3) 逐章解压成纯文本 */
+    out_fd = rb->open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (out_fd < 0) {
+        LOG_ERROR("EPUB: cannot create %s", out_path);
+        goto done;
+    }
+    epub_outfd = out_fd;
+    epub_outlen = 0;
+
+    for (i = 0; i < spcount; i++) {
+        int idx = order[i];
+        char title[64];
+
+        epub_join_path(opf_path, hrefs + idx * EPUB_HREF_LEN, chap_path, sizeof(chap_path));
+        if (chap_path[0] == '\0')
+            continue;
+        if (epub_zip_extract(&z, chap_path, obuf, ocap, zbuf, zcap, &olen) != 0) {
+            LOG_WARN("EPUB: skip %s", chap_path);
+            continue;
+        }
+        epub_extract_title((const char *)obuf, (int)olen, title, sizeof(title));
+        epub_puts("\n\n");
+        epub_puts(title);
+        epub_puts("\n\n");
+        epub_html_to_text((const char *)obuf, (int)olen);
+
+        if ((i & 3) == 0) {
+            rb->lcd_clear_display();
+            rb->lcd_putsxy(4, 4, "Converting EPUB...");
+            rb->lcd_update();
+        }
+    }
+    epub_flush();
+    ok = true;
+    LOG_INFO("EPUB: converted %d chapters", spcount);
+
+  done:
+    if (out_fd >= 0)
+        rb->close(out_fd);
+    epub_outfd = -1;
+    epub_outlen = 0;
+    if (fd >= 0)
+        rb->close(fd);
+    return ok;
+}
+
+static bool epub_prepare(const char *epub_path, char *out_path, int out_size)
+{
+    int fd;
+
+    epub_cache_path(epub_path, out_path, out_size);
+    fd = rb->open(out_path, O_RDONLY);
+    if (fd >= 0) {
+        long sz;
+        rb->lseek(fd, 0, SEEK_END);
+        sz = rb->lseek(fd, 0, SEEK_CUR);
+        rb->close(fd);
+        if (sz > 0) {
+            LOG_INFO("EPUB: using cache %s (%ld bytes)", out_path, sz);
+            return true;
+        }
+    }
+    rb->splash(0, "正在转换 EPUB...");
+    if (!epub_convert(epub_path, out_path)) {
+        rb->splash(HZ, "EPUB 转换失败");
+        return false;
+    }
+    return true;
+}
+
+
 static bool open_book(const char *filename)
 {
+    char book_path[MAX_PATH];
+
+    if (epub_is_epub(filename)) {
+        if (!epub_prepare(filename, book_path, sizeof(book_path)))
+            return false;
+        LOG_INFO("EPUB %s converted to %s", filename, book_path);
+        filename = book_path;
+    }
     LOG_INFO("Opening book %s", filename);
     rb->strlcpy(current_file, filename, sizeof(current_file));
     int fd = rb->open(current_file, O_RDONLY);
@@ -1774,14 +2552,27 @@ static bool open_book(const char *filename)
 }
 
 /* ---------- 文件浏览器 ---------- */
+/* 文件名列表不能放栈上（主线程栈仅 8 KiB，128×MAX_PATH 会溢出），
+ * 也不宜放进 BSS（BSS 计入插件占用、会挤占 plugin_get_buffer() 的可用量），
+ * 因此由 plugin_start() 从插件缓冲区尾部划出一块专门存放。 */
+#define MAX_FILES       128
+static char *file_list = NULL;      /* 区域起点，每条 MAX_PATH 字节 */
+static int   max_files = 0;         /* 实际可容纳的条目数 */
+#define FILE_ENTRY(i)   (file_list + (size_t)(i) * MAX_PATH)
+
 static int file_browser(void)
 {
     struct dirent *entry;
     DIR *dir;
-    char file_list[128][MAX_PATH];
     int num_files = 0, selected = 0;
     int prev_selected = -1;
     int last_wheel = -1;
+
+    if (max_files <= 0) {
+        LOG_ERROR("No memory for file list");
+        rb->splash(HZ, "内存不足");
+        return PLUGIN_ERROR;
+    }
 
     LOG_INFO("File browser started, scanning /ebook");
     dir = rb->opendir("/ebook");
@@ -1793,9 +2584,10 @@ static int file_browser(void)
     while ((entry = rb->readdir(dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
         int len = rb->strlen(entry->d_name);
-        if (len > 4 && rb->strcmp(entry->d_name + len - 4, ".txt") == 0) {
-            if (num_files < 128) {
-                rb->snprintf(file_list[num_files], MAX_PATH, "/ebook/%s", entry->d_name);
+        if ((len > 4 && epub_ci_eq(entry->d_name + len - 4, ".txt", 4)) ||
+            (len > 5 && epub_ci_eq(entry->d_name + len - 5, ".epub", 5))) {
+            if (num_files < max_files) {
+                rb->snprintf(FILE_ENTRY(num_files), MAX_PATH, "/ebook/%s", entry->d_name);
                 LOG_INFO("Found file: %s", entry->d_name);
                 num_files++;
             }
@@ -1823,7 +2615,7 @@ static int file_browser(void)
         if (selected >= max_display) start_idx = selected - max_display + 1;
         for (int i = 0; i < max_display && (start_idx + i) < num_files; i++) {
             char dname[128];
-            get_full_display_name(file_list[start_idx + i], dname, sizeof(dname));
+            get_full_display_name(FILE_ENTRY(start_idx + i), dname, sizeof(dname));
             if (start_idx + i == selected) {
                 rb->lcd_puts(0, i, (const unsigned char *)">");
                 rb->lcd_puts_scroll(1, i, (const unsigned char *)dname);
@@ -1870,8 +2662,8 @@ static int file_browser(void)
             }
             LOG_INFO("File list left/right, selected=%d", selected);
         } else if (button == BUTTON_SELECT) {
-            LOG_INFO("File selected: %s", file_list[selected]);
-            if (open_book(file_list[selected])) {
+            LOG_INFO("File selected: %s", FILE_ENTRY(selected));
+            if (open_book(FILE_ENTRY(selected))) {
                 bool reading = true;
                 while (reading) {
                     int btn = rb->button_get_w_tmo(HZ/10);
@@ -1937,8 +2729,25 @@ enum plugin_status plugin_start(const void* parameter)
         }
         return PLUGIN_ERROR;
     }
-    if (render_buf_size > 32768) render_buf_size = 32768;
-    LOG_INFO("Render buffer size: %d bytes", (int)render_buf_size);
+    /* 文件列表区域从同一块插件缓冲区尾部划出，渲染缓冲至少保留 READ_BUFFER_SIZE */
+    if (render_buf_size > READ_BUFFER_SIZE) {
+        max_files = (int)((render_buf_size - READ_BUFFER_SIZE) / MAX_PATH);
+    } else {
+        max_files = 0;
+    }
+    if (max_files > MAX_FILES) max_files = MAX_FILES;
+    {
+        size_t total_buf = render_buf_size;
+        render_buf_size -= (size_t)max_files * MAX_PATH;
+        if (render_buf_size > 32768) render_buf_size = 32768;
+        /* 文件列表贴在插件缓冲区末尾，渲染缓冲在前部，
+         * 中间剩余的一段作为 EPUB 解压工作区（不动音乐缓冲区）。 */
+        file_list = render_buffer + total_buf - (size_t)max_files * MAX_PATH;
+        epub_work = (unsigned char *)render_buffer + render_buf_size;
+        epub_work_size = (size_t)((char *)file_list - (char *)epub_work);
+    }
+    LOG_INFO("Render buffer size: %d bytes, file list slots: %d, EPUB workspace: %d",
+             (int)render_buf_size, max_files, (int)epub_work_size);
 
     show_splash_screen();
 

@@ -371,131 +371,134 @@ static void STY_zpg() {
     programcounter += 1;
 }
 
-/* ADC */
-static void ADC_a() {
+/* ADC - with 6502 decimal (BCD) mode support */
+static void adc_common(uint8_t operand) {
+    uint16_t temp;
     uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(dbyte(programcounter));
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    if (Status & 0b00001000) {
+        /* Decimal mode: adjust each nibble separately */
+        temp = (uint16_t)(regA & 0x0F) + (operand & 0x0F) + (Status & 1);
+        if (temp > 9)
+            temp += 6;
+        temp += (uint16_t)(regA & 0xF0) + (operand & 0xF0);
+        if (temp > 0x9F)
+            temp += 0x60;
+        Status &= ~0b11000011;
+        if (temp > 0xFF)
+            Status |= 0b00000001;
+        regA = temp & 0xFF;
+        if (regA == 0)
+            Status |= 0b00000010;
+        if (regA & 0x80)
+            Status |= 0b10000000;
+    } else {
+        temp = (uint16_t)(Status & 1) + operand;
+        result = (uint16_t)regA + temp;
+        Status &= ~0b11000011;
+        Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
+        Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+        regA = result & 0xFF;
+    }
+}
+static void ADC_a() {
+    adc_common(cpu_read(dbyte(programcounter)));
     programcounter += 2;
 }
 static void ADC_aX() {
-    uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(dbyte(programcounter) + regX);
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    adc_common(cpu_read(dbyte(programcounter) + regX));
     programcounter += 2;
 }
 static void ADC_aY() {
-    uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(dbyte(programcounter) + regY);
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    adc_common(cpu_read(dbyte(programcounter) + regY));
     programcounter += 2;
 }
 static void ADC_I() {
-    uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(programcounter);
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    adc_common(cpu_read(programcounter));
     programcounter += 1;
 }
 static void ADC_zpg() {
-    uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(cpu_read(programcounter));
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    adc_common(cpu_read(cpu_read(programcounter)));
     programcounter += 1;
 }
 static void ADC_zpgX() {
-    uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(cpu_read(programcounter) + regX);
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    adc_common(cpu_read((cpu_read(programcounter) + regX) & 0xFF));
     programcounter += 1;
 }
 static void ADC_ind_Y() {
-    uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter)) + regY);
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    adc_common(cpu_read(dbyte(cpu_read(programcounter)) + regY));
     programcounter += 1;
 }
 static void ADC_X_ind() {
-    uint16_t result;
-    uint16_t temp = (Status & 1) + cpu_read(dbyte(cpu_read(programcounter) + regX));
-    result = regA + temp;
-    Status &= ~0b11000011;
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
-    regA = result & 0xFF;
+    adc_common(cpu_read(dbyte((cpu_read(programcounter) + regX) & 0xFF)));
     programcounter += 1;
 }
-
-/* SBC - similar to ADC but with operand complemented */
-#define SBC_common(operand) \
-    uint16_t result; \
-    uint16_t temp = (operand ^ 0xFF) + (Status & 1); \
-    result = regA + temp; \
-    Status &= ~0b11000011; \
-    Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1)); \
-    Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0); \
-    regA = result & 0xFF;
-
+/* SBC - with 6502 decimal (BCD) mode support */
+static void sbc_common(uint8_t operand) {
+    uint16_t temp;
+    uint16_t result;
+    if (Status & 0b00001000) {
+        /* Decimal mode */
+        uint8_t carry_in = Status & 1;
+        int lo = (regA & 0x0F) - (operand & 0x0F) - (carry_in ? 0 : 1);
+        int hi = (regA >> 4) - (operand >> 4);
+        int borrow = 0;
+        if (lo < 0) {
+            lo += 10;
+            hi--;
+        }
+        if (hi < 0) {
+            hi += 10;
+            borrow = 1;
+        }
+        Status &= ~0b11000011;
+        if (!borrow)
+            Status |= 0b00000001;
+        regA = (uint8_t)(((hi & 0x0F) << 4) | (lo & 0x0F));
+        if (regA == 0)
+            Status |= 0b00000010;
+        if (regA & 0x80)
+            Status |= 0b10000000;
+    } else {
+        temp = (uint16_t)(operand ^ 0xFF) + (Status & 1);
+        result = (uint16_t)regA + temp;
+        Status &= ~0b11000011;
+        Status |= ((result & 0x80) | ((result & 0x100) >> 8) | (((result & 0xFF) == 0) << 1));
+        Status |= ((((temp & 0x80) == (regA & 0x80)) && ((regA & 0x80) != (result & 0x80))) ? 0x40 : 0);
+        regA = result & 0xFF;
+    }
+}
 static void SBC_a() {
-    SBC_common(cpu_read(dbyte(programcounter)));
+    sbc_common(cpu_read(dbyte(programcounter)));
     programcounter += 2;
 }
 static void SBC_aX() {
-    SBC_common(cpu_read(dbyte(programcounter) + regX));
+    sbc_common(cpu_read(dbyte(programcounter) + regX));
     programcounter += 2;
 }
 static void SBC_aY() {
-    SBC_common(cpu_read(dbyte(programcounter) + regY));
+    sbc_common(cpu_read(dbyte(programcounter) + regY));
     programcounter += 2;
 }
 static void SBC_I() {
-    SBC_common(cpu_read(programcounter));
+    sbc_common(cpu_read(programcounter));
     programcounter += 1;
 }
 static void SBC_zpg() {
-    SBC_common(cpu_read(cpu_read(programcounter)));
+    sbc_common(cpu_read(cpu_read(programcounter)));
     programcounter += 1;
 }
 static void SBC_zpgX() {
-    SBC_common(cpu_read(cpu_read(programcounter) + regX));
+    sbc_common(cpu_read((cpu_read(programcounter) + regX) & 0xFF));
     programcounter += 1;
 }
 static void SBC_ind_Y() {
-    SBC_common(cpu_read(dbyte(cpu_read(programcounter)) + regY));
+    sbc_common(cpu_read(dbyte(cpu_read(programcounter)) + regY));
     programcounter += 1;
 }
 static void SBC_X_ind() {
-    SBC_common(cpu_read(dbyte(cpu_read(programcounter) + regX)));
+    sbc_common(cpu_read(dbyte((cpu_read(programcounter) + regX) & 0xFF)));
     programcounter += 1;
 }
-
 /* INC */
 static void INC_a() {
     uint8_t val = cpu_read(dbyte(programcounter)) + 1;
@@ -1113,7 +1116,7 @@ static void (*instructionArr[])(void) = {
     INX, SBC_I, NOP, NULL, CPX_a, SBC_a, INC_a, NULL,
     /* 0xF0-0xFF */
     BEQ, SBC_ind_Y, JAM, NULL, NOP, SBC_zpgX, INC_zpgX, NULL,
-    SED, SBC_aX, NOP, NULL, NOP, SBC_aX, INC_aX, NULL
+    SED, SBC_aY, NOP, NULL, NOP, SBC_aX, INC_aX, NULL
 };
 
 /* Reset CPU */

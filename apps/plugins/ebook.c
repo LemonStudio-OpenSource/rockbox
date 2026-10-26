@@ -407,7 +407,11 @@ static int compute_next_offset(int start_offset)
         rb->memcpy(temp_buf + line_buf_len, p, char_bytes);
         temp_buf[line_buf_len + char_bytes] = '\0';
         int w_line, h_line;
-        rb->font_getstringsize((const unsigned char *)temp_buf, &w_line, &h_line, FONT_UI);
+        const char *measure = temp_buf;
+        /* 居中标记不参与绘制，也就不能参与宽度计算 */
+        if (line_buf_len >= 5 && rb->strncmp(line_buf, "<<C>>", 5) == 0)
+            measure = temp_buf + 5;
+        rb->font_getstringsize((const unsigned char *)measure, &w_line, &h_line, FONT_UI);
 
         if (w_line >= LCD_WIDTH) {
             if (line_buf_len > 0) {
@@ -443,6 +447,59 @@ static int compute_next_offset(int start_offset)
         LOG_INFO("compute_next_offset: start=%d -> next=%d (end or invalid)", start_offset, next_offset_candidate);
         return (next_offset_candidate < file_size) ? next_offset_candidate : -1;
     }
+}
+
+/* 当前页第一张图片在 EPUB 内的路径（空串表示本页没有图片） */
+static char page_image_path[MAX_PATH] = "";
+static char line_buf_placeholder[96];
+
+/* 输出一行文本；遇到 EPUB 图片标记则记录路径并画占位符 */
+static void emit_text_line(const char *text, int len, int y)
+{
+    /* 居中块（标题等）：转换阶段已加上 "<<C>>" 标记 */
+    if (len > 5 && rb->strncmp(text, "<<C>>", 5) == 0) {
+        const char *body = text + 5;
+        int w = 0, h = 0;
+
+        rb->font_getstringsize((const unsigned char *)body, &w, &h, FONT_UI);
+        if (w > 0 && w <= LCD_WIDTH) {
+            int x = (LCD_WIDTH - w) / 2;
+            if (x < 0)
+                x = 0;
+            rb->lcd_putsxy(x, y * font_height, (const unsigned char *)body);
+        } else {
+            rb->lcd_puts(0, y, (const unsigned char *)body);   /* 太宽则不居中 */
+        }
+        return;
+    }
+    if (len > 7 && rb->strncmp(text, "<<IMG:", 6) == 0) {
+        const char *body = text + 6;
+        const char *q = body;
+        const char *end = text + len;
+        int plen;
+
+        /* 找到结尾的 ">>" */
+        while (q + 1 < end && !(q[0] == '>' && q[1] == '>'))
+            q++;
+        plen = (int)(q - body);
+        if (plen > 0 && plen < (int)sizeof(page_image_path)) {
+            if (page_image_path[0] == '\0') {   /* 只记本页第一张 */
+                rb->memcpy(page_image_path, body, plen);
+                page_image_path[plen] = '\0';
+            }
+            {
+                /* 占位符带上文件名，方便知道是哪张图 */
+                const char *slash = body + plen;
+                while (slash > body && slash[-1] != '/')
+                    slash--;
+                rb->snprintf(line_buf_placeholder, sizeof(line_buf_placeholder),
+                             "[图片: %.60s]", slash);
+                rb->lcd_puts(0, y, (const unsigned char *)line_buf_placeholder);
+            }
+            return;
+        }
+    }
+    rb->lcd_puts(0, y, (const unsigned char *)text);
 }
 
 static void render_page(int offset)
@@ -481,6 +538,8 @@ static void render_page(int offset)
     apply_color_scheme();
     rb->lcd_clear_display();
 
+    page_image_path[0] = '\0';
+
     long tick = *rb->current_tick;
     if (tick - last_toggle_tick >= HZ * 5) {
         last_toggle_tick = tick;
@@ -509,7 +568,7 @@ static void render_page(int offset)
         if (c == '\n' || c == '\r') {
             if (line_buf_len > 0) {
                 line_buf[line_buf_len] = '\0';
-                rb->lcd_puts(0, line_y, (const unsigned char *)line_buf);
+                emit_text_line(line_buf, line_buf_len, line_y);
                 line_buf_len = 0;
                 line_y++;
             } else {
@@ -529,12 +588,16 @@ static void render_page(int offset)
         rb->memcpy(temp_buf + line_buf_len, p, char_bytes);
         temp_buf[line_buf_len + char_bytes] = '\0';
         int w_line, h_line;
-        rb->font_getstringsize((const unsigned char *)temp_buf, &w_line, &h_line, FONT_UI);
+        const char *measure = temp_buf;
+        /* 居中标记不参与绘制，也就不能参与宽度计算 */
+        if (line_buf_len >= 5 && rb->strncmp(line_buf, "<<C>>", 5) == 0)
+            measure = temp_buf + 5;
+        rb->font_getstringsize((const unsigned char *)measure, &w_line, &h_line, FONT_UI);
 
         if (w_line >= LCD_WIDTH) {
             if (line_buf_len > 0) {
                 line_buf[line_buf_len] = '\0';
-                rb->lcd_puts(0, line_y, (const unsigned char *)line_buf);
+                emit_text_line(line_buf, line_buf_len, line_y);
                 line_buf_len = 0;
                 line_y++;
                 if (line_y >= lines_per_screen - 1) break;
@@ -558,7 +621,7 @@ static void render_page(int offset)
 
     if (line_buf_len > 0) {
         line_buf[line_buf_len] = '\0';
-        rb->lcd_puts(0, line_y, (const unsigned char *)line_buf);
+        emit_text_line(line_buf, line_buf_len, line_y);
     }
 
     int percent = (file_size > 0) ? (offset * 100) / file_size : 0;
@@ -2080,17 +2143,221 @@ static bool epub_tag_is_block(const char *name, int nlen)
     return false;
 }
 
-static void epub_html_to_text(const char *buf, int len)
+/* 取路径的目录部分（含结尾 '/'） */
+static void epub_dirname(const char *path, char *out, int out_size)
+{
+    int i, last = -1;
+    int len = rb->strlen(path);
+
+    for (i = 0; i < len; i++) {
+        if (path[i] == '/')
+            last = i;
+    }
+    if (last < 0 || last + 2 > out_size) {
+        out[0] = '\0';
+        return;
+    }
+    rb->memcpy(out, path, last + 1);
+    out[last + 1] = '\0';
+}
+
+/* 把相对 src 解析成 zip 内绝对路径，处理 "./" 与 "../" */
+static void epub_resolve_rel(const char *base_dir, const char *rel, char *out, int out_size)
+{
+    char tmp[MAX_PATH * 2];
+    int blen = rb->strlen(base_dir);
+    int rlen = rb->strlen(rel);
+    int i, j = 0;
+
+    if (blen + rlen + 1 > (int)sizeof(tmp)) {
+        out[0] = '\0';
+        return;
+    }
+    rb->memcpy(tmp, base_dir, blen);
+    rb->memcpy(tmp + blen, rel, rlen);
+    rlen += blen;
+    tmp[rlen] = '\0';
+
+    for (i = 0; i < rlen; ) {
+        if (tmp[i] == '.' && i + 1 < rlen && tmp[i + 1] == '/') {
+            i += 2;
+            continue;
+        }
+        if (tmp[i] == '.' && i + 2 < rlen && tmp[i + 1] == '.' && tmp[i + 2] == '/') {
+            /* 先去掉结尾的 '/'，再去掉最后一段目录名，否则会残留上一级名字 */
+            if (j > 0 && out[j - 1] == '/')
+                j--;
+            while (j > 0 && out[j - 1] != '/')
+                j--;
+            i += 3;
+            continue;
+        }
+        if (j < out_size - 1)
+            out[j++] = tmp[i];
+        i++;
+    }
+    out[j] = '\0';
+}
+
+/* ---------- 极简 CSS：只处理块级元素的居中 ---------- */
+
+#define EPUB_CSS_MAX 12
+static char css_center_sel[EPUB_CSS_MAX][24];
+static int  css_center_count = 0;
+
+static bool epub_css_center_has(const char *sel, int sellen)
+{
+    int i;
+
+    if (sellen <= 0)
+        return false;
+    for (i = 0; i < css_center_count; i++) {
+        if ((int)rb->strlen(css_center_sel[i]) == sellen &&
+            epub_bytes_eq(css_center_sel[i], sel, sellen))
+            return true;
+    }
+    return false;
+}
+
+/* 扫 <style> 块，记下声明含 text-align:center 的选择器（取最后一个词） */
+static void epub_css_scan(const char *buf, int len)
+{
+    const char *end = buf + len;
+    const char *p = buf;
+
+    css_center_count = 0;
+    while (p < end && css_center_count < EPUB_CSS_MAX) {
+        const char *lt = epub_memmem(p, (int)(end - p), "<style");
+        const char *gt, *close, *brace, *rbrace;
+
+        if (lt == NULL)
+            break;
+        gt = epub_memchr(lt, (int)(end - lt), '>');
+        if (gt == NULL)
+            break;
+        gt++;
+        close = epub_memmem(gt, (int)(end - gt), "</style");
+        if (close == NULL)
+            close = end;
+
+        brace = gt;
+        while (brace < close) {
+            brace = epub_memchr(brace, (int)(close - brace), '{');
+            if (brace == NULL)
+                break;
+            rbrace = epub_memchr(brace, (int)(close - brace), '}');
+            if (rbrace == NULL)
+                break;
+
+            if (epub_memmem(brace, (int)(rbrace - brace), "text-align") != NULL &&
+                epub_memmem(brace, (int)(rbrace - brace), "center") != NULL) {
+                const char *w = brace;
+                const char *wstart;
+                int slen;
+
+                while (w > gt && (w[-1] == ' ' || w[-1] == '\t' ||
+                                  w[-1] == '\n' || w[-1] == '\r'))
+                    w--;
+                wstart = w;
+                while (wstart > gt && wstart[-1] != ' ' && wstart[-1] != '\t' &&
+                       wstart[-1] != '\n' && wstart[-1] != '\r' && wstart[-1] != ',' &&
+                       wstart[-1] != '}' && wstart[-1] != ';' && wstart[-1] != '{')
+                    wstart--;
+                slen = (int)(w - wstart);
+
+                /* 复合选择器 p.title 只保留类名；#id 无法匹配，忽略整条 */
+                {
+                    int k, cut = 0;
+                    for (k = slen - 1; k > 0; k--) {
+                        if (wstart[k - 1] == '.') {
+                            cut = k;
+                            break;
+                        }
+                    }
+                    if (cut > 0) {
+                        wstart += cut;
+                        slen -= cut;
+                    }
+                }
+                if (slen > 0 && wstart[0] != '#' &&
+                    slen < (int)sizeof(css_center_sel[0])) {
+                    rb->memcpy(css_center_sel[css_center_count], wstart, slen);
+                    css_center_sel[css_center_count][slen] = '\0';
+                    css_center_count++;
+                }
+            }
+            brace = rbrace + 1;
+        }
+        p = (close < end) ? close : end;
+        if (p < end)
+            p++;
+    }
+}
+
+static bool epub_tag_is_heading(const char *name, int nlen)
+{
+    return (nlen == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6');
+}
+
+/* 该标签是否居中：内联 style 优先，其次按标签名或 class 查样式表 */
+static bool epub_center_for(const char *name, int nlen,
+                            const char *tagstart, const char *tagend)
+{
+    char val[80];
+    int slen;
+
+    if (epub_get_attr(tagstart, tagend, "style", val, sizeof(val))) {
+        slen = rb->strlen(val);
+        if (epub_memmem(val, slen, "text-align") != NULL &&
+            epub_memmem(val, slen, "center") != NULL)
+            return true;
+    }
+    if (epub_css_center_has(name, nlen))
+        return true;
+
+    /* class="foo bar" 中任一个命中样式表即居中 */
+    if (epub_get_attr(tagstart, tagend, "class", val, sizeof(val))) {
+        const char *p = val;
+        while (*p != '\0') {
+            const char *q = p;
+            while (*q != '\0' && *q != ' ' && *q != '\t')
+                q++;
+            if (epub_css_center_has(p, (int)(q - p)))
+                return true;
+            while (*q == ' ' || *q == '\t')
+                q++;
+            p = q;
+        }
+    }
+    return false;
+}
+
+/* 开始新行：必要时先补上居中标记 */
+static void epub_break_line(int *pending_nl, int center)
+{
+    if (*pending_nl) {
+        epub_puts("\n");
+        if (center)
+            epub_puts("<<C>>");
+        *pending_nl = 0;
+    }
+}
+
+static void epub_html_to_text(const char *buf, int len, const char *chap_dir)
 {
     int i = 0;
     bool skip = false;
     int pending_nl = 0;
+    int cur_center = 0;         /* 当前块级元素是否居中 */
+
+    epub_css_scan(buf, len);
 
     while (i < len) {
         if (buf[i] == '<') {
             int j = i + 1;
             bool closing = false;
             const char *name;
+            const char *gt;
             int nlen;
 
             if (j < len && buf[j] == '/') {
@@ -2103,15 +2370,50 @@ static void epub_html_to_text(const char *buf, int len)
                 j++;
             nlen = (int)(buf + j - name);
 
+            /* 先定位标签结束，属性解析要用到它 */
+            while (i < len && buf[i] != '>')
+                i++;
+            gt = (i < len) ? buf + i : buf + len;
+
             if (nlen == 6 && epub_ci_eq(name, "script", 6))
                 skip = !closing;
             else if (nlen == 5 && epub_ci_eq(name, "style", 5))
                 skip = !closing;
-            else if (!skip && epub_tag_is_block(name, nlen))
+            else if (!skip && !closing && nlen == 3 && epub_ci_eq(name, "img", 3)) {
+                char src[EPUB_HREF_LEN];
+                if (epub_get_attr(name + nlen, gt, "src", src, sizeof(src))) {
+                    char full[MAX_PATH * 2];
+                    epub_resolve_rel(chap_dir, src, full, sizeof(full));
+                    if (full[0] != '\0') {
+                        epub_puts("\n<<IMG:");
+                        epub_puts(full);
+                        epub_puts(">>\n");
+                    }
+                }
+            }
+            else if (!skip && !closing && nlen == 5 && epub_ci_eq(name, "image", 5)) {
+                /* SVG 内嵌位图 */
+                char src[EPUB_HREF_LEN];
+                if (epub_get_attr(name + nlen, gt, "xlink:href", src, sizeof(src)) ||
+                    epub_get_attr(name + nlen, gt, "href", src, sizeof(src))) {
+                    char full[MAX_PATH * 2];
+                    epub_resolve_rel(chap_dir, src, full, sizeof(full));
+                    if (full[0] != '\0') {
+                        epub_puts("\n<<IMG:");
+                        epub_puts(full);
+                        epub_puts(">>\n");
+                    }
+                }
+            }
+            else if (!skip && !closing && epub_tag_is_block(name, nlen)) {
                 pending_nl = 1;
+                if (epub_tag_is_heading(name, nlen) &&
+                    epub_center_for(name, nlen, name + nlen, gt))
+                    cur_center = 1;
+            }
+            else if (!skip && closing && epub_tag_is_heading(name, nlen))
+                cur_center = 0;
 
-            while (i < len && buf[i] != '>')
-                i++;
             if (i < len)
                 i++;
             continue;
@@ -2128,10 +2430,7 @@ static void epub_html_to_text(const char *buf, int len)
             if (j < len && buf[j] == ';' && n > 0) {
                 const char *rep = epub_entity_lookup(ent);
                 if (rep != NULL) {
-                    if (pending_nl) {
-                        epub_puts("\n");
-                        pending_nl = 0;
-                    }
+                    epub_break_line(&pending_nl, cur_center);
                     if (!skip)
                         epub_puts(rep);
                     i = j + 1;
@@ -2169,10 +2468,7 @@ static void epub_html_to_text(const char *buf, int len)
                     if (valid && v > 0 && v < 0x110000UL) {
                         unsigned char ub[4];
                         int ul = epub_utf8_encode(v, ub);
-                        if (pending_nl) {
-                            epub_puts("\n");
-                            pending_nl = 0;
-                        }
+                        epub_break_line(&pending_nl, cur_center);
                         if (!skip)
                             epub_put((const char *)ub, ul);
                         i = j + 1;
@@ -2180,10 +2476,7 @@ static void epub_html_to_text(const char *buf, int len)
                     }
                 }
             }
-            if (pending_nl) {
-                epub_puts("\n");
-                pending_nl = 0;
-            }
+            epub_break_line(&pending_nl, cur_center);
             if (!skip)
                 epub_put("&", 1);
             i++;
@@ -2193,16 +2486,10 @@ static void epub_html_to_text(const char *buf, int len)
         if (!skip) {
             /* 折叠连续空白 */
             if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '\t') {
-                if (pending_nl) {
-                    epub_puts("\n");
-                    pending_nl = 0;
-                }
+                epub_break_line(&pending_nl, cur_center);
                 epub_put(" ", 1);
             } else {
-                if (pending_nl) {
-                    epub_puts("\n");
-                    pending_nl = 0;
-                }
+                epub_break_line(&pending_nl, cur_center);
                 epub_put(buf + i, 1);
             }
         }
@@ -2447,10 +2734,13 @@ static bool epub_convert(const char *epub_path, const char *out_path)
     for (i = 0; i < spcount; i++) {
         int idx = order[i];
         char title[64];
+        char chap_dir[EPUB_HREF_LEN];
 
         epub_join_path(opf_path, hrefs + idx * EPUB_HREF_LEN, chap_path, sizeof(chap_path));
         if (chap_path[0] == '\0')
             continue;
+        /* 图片 src 相对于章节文件所在目录，而不是 OPF */
+        epub_dirname(chap_path, chap_dir, sizeof(chap_dir));
         if (epub_zip_extract(&z, chap_path, obuf, ocap, zbuf, zcap, &olen) != 0) {
             LOG_WARN("EPUB: skip %s", chap_path);
             continue;
@@ -2459,7 +2749,7 @@ static bool epub_convert(const char *epub_path, const char *out_path)
         epub_puts("\n\n");
         epub_puts(title);
         epub_puts("\n\n");
-        epub_html_to_text((const char *)obuf, (int)olen);
+        epub_html_to_text((const char *)obuf, (int)olen, chap_dir);
 
         if ((i & 3) == 0) {
             rb->lcd_clear_display();
@@ -2479,6 +2769,200 @@ static bool epub_convert(const char *epub_path, const char *out_path)
     if (fd >= 0)
         rb->close(fd);
     return ok;
+}
+
+/* 由 .txt 缓存路径推出同名 .epub */
+static bool epub_sibling_path(char *out, int out_size)
+{
+    int len = rb->strlen(current_file);
+
+    if (len < 5 || len + 1 > out_size)
+        return false;
+    if (rb->strcmp(current_file + len - 4, ".txt") != 0)
+        return false;
+    rb->strcpy(out, current_file);
+    rb->strcpy(out + len - 4, ".epub");
+    return true;
+}
+
+/* ---------- EPUB 内嵌图片 ---------- */
+
+/* decode_jpeg_mem() 来自 apps/plugins/lib/pluginlib_jpeg_mem.c，随 libplugin.a
+ * 链进每个 .rock。它在 IDCT 阶段就缩放到目标尺寸，所以 1600x1200 的照片
+ * 解码到屏幕大小只要几十 KB——比先整幅解码再缩放省得多，也让“图片比插件
+ * 缓冲区大”不再是问题。用法参照 apps/plugins/test_mem_jpeg.c。 */
+#include "lib/jpeg_mem.h"
+#if LCD_DEPTH < 8
+#include "lib/grey.h"
+GREY_INFO_STRUCT
+#define EPUB_CFORMAT (&format_grey)
+#else
+#define EPUB_CFORMAT (&format_native)
+#endif
+
+/* 解码并全屏显示一张图片；work 是可用工作区（可能借自音频缓冲区） */
+static void show_image_blob(const unsigned char *blob, int len,
+                            unsigned char *work, size_t work_size)
+{
+    struct bitmap bm;
+    int ret, x, y;
+
+    /* 目前只认 JPEG（EPUB 里占绝大多数） */
+    if (len < 4 || blob[0] != 0xFF || blob[1] != 0xD8) {
+        rb->splash(HZ, "暂不支持该图片格式（目前仅 JPEG）");
+        return;
+    }
+
+#if LCD_DEPTH < 8
+    {   /* 灰度屏（如 iPod 4G 的 2bpp）走 greylib，抖动后观感好得多 */
+        long greysize = 0;
+        if (!grey_init(work, (long)work_size, GREY_ON_COP,
+                       LCD_WIDTH, LCD_HEIGHT, &greysize)) {
+            rb->splash(HZ, "灰度缓冲不足");
+            return;
+        }
+        work += greysize;
+        work_size -= (size_t)greysize;
+    }
+#endif
+
+    if (work_size < 512) {
+        rb->splash(HZ, "内存不足，无法解码此图片");
+        goto done;
+    }
+
+    bm.width = LCD_WIDTH;
+    bm.height = LCD_HEIGHT;
+    bm.data = work;
+
+    rb->splash(HZ / 4, "解码中...");
+#ifdef HAVE_ADJUSTABLE_CPU_FREQ
+    rb->cpu_boost(true);
+#endif
+    ret = decode_jpeg_mem((unsigned char *)blob, (unsigned long)len, &bm,
+                          (int)work_size,
+                          FORMAT_NATIVE | FORMAT_RESIZE | FORMAT_KEEP_ASPECT,
+                          EPUB_CFORMAT);
+#ifdef HAVE_ADJUSTABLE_CPU_FREQ
+    rb->cpu_boost(false);
+#endif
+    if (ret < 1) {
+        rb->splash(HZ, "解码失败 (%d)", ret);
+        goto done;
+    }
+
+    x = (LCD_WIDTH - bm.width) / 2;
+    y = (LCD_HEIGHT - bm.height) / 2;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+
+    rb->lcd_clear_display();
+#if LCD_DEPTH < 8
+    grey_show(true);
+    grey_ub_gray_bitmap((const unsigned char *)bm.data, x, y, bm.width, bm.height);
+#else
+    rb->lcd_bitmap((fb_data *)bm.data, x, y, bm.width, bm.height);
+#endif
+    rb->lcd_update();
+
+    /* 按任意键返回阅读；灰度模式下由 ISR 持续刷新缓冲区 */
+    rb->button_get(true);
+
+done:
+    rb->lcd_scroll_stop();
+#if LCD_DEPTH < 8
+    grey_show(false);
+    grey_release();
+#endif
+    rb->button_clear_queue();
+}
+
+/* 查看当前页的图片：解压到缓冲区后交给 show_image_blob() */
+static void view_page_image(void)
+{
+    char epub_path[MAX_PATH];
+    char img_name[MAX_PATH];
+    epub_zip_t z;
+    int fd;
+    unsigned int method = 0, comp = 0, raw = 0, off = 0;
+    unsigned char *out = NULL;
+    unsigned char *scratch = NULL;
+    unsigned int out_cap = 0, scratch_cap = 0, out_len = 0;
+    unsigned char *abuf = NULL;
+    size_t abuf_size = 0;
+    bool borrowed = false;
+    int rc;
+
+    if (page_image_path[0] == '\0')
+        return;
+
+    rb->strncpy(img_name, page_image_path, sizeof(img_name) - 1);
+    img_name[sizeof(img_name) - 1] = '\0';
+
+    if (!epub_sibling_path(epub_path, sizeof(epub_path))) {
+        rb->splash(HZ, "该文件没有对应 EPUB");
+        return;
+    }
+
+    fd = rb->open(epub_path, O_RDONLY);
+    if (fd < 0) {
+        rb->splash(HZ, "无法打开 EPUB");
+        return;
+    }
+    if (!epub_zip_open(&z, fd)) {
+        rb->close(fd);
+        rb->splash(HZ, "EPUB 索引损坏");
+        return;
+    }
+    if (!epub_zip_find(&z, img_name, &method, &comp, &raw, &off) || comp == 0 || raw == 0) {
+        rb->close(fd);
+        rb->splash(HZ, "图片不存在");
+        return;
+    }
+
+    /* 优先用 EPUB 工作区，不够再借音频缓冲区（用完立刻归还） */
+    if (epub_work != NULL && epub_work_size >= (size_t)raw + (size_t)comp) {
+        out = epub_work;
+        out_cap = raw;
+        scratch = epub_work + raw;
+        scratch_cap = (unsigned int)(epub_work_size - raw);
+    } else {
+        rb->splash(HZ, "解压图片...");
+        abuf = (unsigned char *)rb->plugin_get_audio_buffer(&abuf_size);
+        if (abuf == NULL || abuf_size < (size_t)raw + (size_t)comp) {
+            if (abuf != NULL)
+                rb->plugin_release_audio_buffer();
+            rb->close(fd);
+            rb->splash(HZ, "内存不足，无法显示此图片");
+            return;
+        }
+        borrowed = true;
+        out = abuf;
+        out_cap = raw;
+        scratch = abuf + raw;
+        scratch_cap = (unsigned int)(abuf_size - raw);
+    }
+
+    rc = epub_zip_extract(&z, img_name, out, out_cap, scratch, scratch_cap, &out_len);
+    rb->close(fd);
+
+    if (rc != 0) {
+        if (borrowed)
+            rb->plugin_release_audio_buffer();
+        rb->splash(HZ, "解压失败 (%d)", rc);
+        return;
+    }
+
+    LOG_INFO("image %s: %d bytes (method %u)", img_name, (int)out_len, method);
+
+    /* 数据和缓冲区在查看期间保持有效；scratch 在解压后已空闲，
+     * 正好当作解码输出缓冲（避免二次索取音频缓冲区） */
+    show_image_blob(out, (int)out_len, scratch, scratch_cap);
+
+    if (borrowed)
+        rb->plugin_release_audio_buffer();
 }
 
 static bool epub_prepare(const char *epub_path, char *out_path, int out_size)
@@ -2679,6 +3163,9 @@ static int file_browser(void)
                         } else if (ret == -2) {
                             LOG_INFO("Return to reading from menu");
                         }
+                    } else if (btn == BUTTON_SELECT) {
+                        if (page_image_path[0] != '\0')
+                            view_page_image();
                     } else if (btn == BUTTON_PLAY) {
                         bookmarks[0] = current_file_offset;
                         save_bookmarks_to_file();

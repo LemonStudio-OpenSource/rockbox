@@ -68,6 +68,12 @@ static struct imgview_settings settings =
 };
 static struct imgview_settings old_settings;
 
+#ifdef USE_PLUG_BUF
+/* 开启后每张图片都先索取音频缓冲区，从而始终能以原始分辨率显示
+ * （见 min_downscale()：ds_min 恒为 1，可放大四个档位）。 */
+static bool always_audio_buffer = false;
+#endif
+
 static struct configdata config[] =
 {
 #ifdef HAVE_LCD_COLOR
@@ -79,6 +85,10 @@ static struct configdata config[] =
     { TYPE_INT, SS_MIN_TIMEOUT, SS_MAX_TIMEOUT,
         { .int_p = &settings.ss_timeout }, "Slideshow Time", NULL },
     { TYPE_BOOL, 0, 1, { .bool_p = &settings.hide_info }, "Hide Info", NULL },
+#ifdef USE_PLUG_BUF
+    { TYPE_BOOL, 0, 1, { .bool_p = &always_audio_buffer },
+        "Always Use Audio Buffer", NULL },
+#endif
 };
 
 static void cb_progress(int current, int total);
@@ -260,12 +270,31 @@ static bool set_option_hide_info(void)
 
 MENUITEM_FUNCTION(hide_info_item, 0, ID2P(LANG_HIDE_INFO),
                   set_option_hide_info, NULL, Icon_NOICON);
+
+#ifdef USE_PLUG_BUF
+static bool set_option_always_audio_buffer(void)
+{
+    rb->set_bool("Always Use Audio Buffer", &always_audio_buffer);
+    /* 立即写回：plugin_start() 只在 settings 结构变化时才保存配置，
+     * 而本开关不在该结构里。 */
+    configfile_save(IMGVIEW_CONFIGFILE, config, ARRAYLEN(config),
+                    IMGVIEW_SETTINGS_VERSION);
+    return false;
+}
+
+MENUITEM_FUNCTION(always_audio_buffer_item, 0, "Audio Buffer",
+                  set_option_always_audio_buffer, NULL, Icon_NOICON);
+#endif /* USE_PLUG_BUF */
 MAKE_MENU(display_menu, ID2P(LANG_MENU_DISPLAY_OPTIONS), NULL, Icon_NOICON,
 #ifdef HAVE_LCD_COLOR
           &grayscale_item,
           &dithering_item,
 #endif /* HAVE_LCD_COLOR */
-          &hide_info_item);
+          &hide_info_item
+#ifdef USE_PLUG_BUF
+          , &always_audio_buffer_item
+#endif
+          );
 
 static void display_options(void)
 {
@@ -887,6 +916,13 @@ static int load_and_show(char *filename, struct image_info *info,
         file_pt[curfile] = NULL;
         return change_filename(direction);
     }
+
+#ifdef USE_PLUG_BUF
+    /* 选项打开时，不管图片多大都先要走音频缓冲区这条路，
+     * 拿到之后 iv_api.plug_buf 变为 false，重试时不再询问。 */
+    if (iv_api.plug_buf && always_audio_buffer)
+        return ask_and_get_audio_buffer(filename);
+#endif
 
 reload_decoder:
     rb->lcd_clear_display();

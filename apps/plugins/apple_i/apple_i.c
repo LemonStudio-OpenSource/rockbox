@@ -332,7 +332,7 @@ static uint8_t mem_read(uint16_t addr) {
             kbd_lock_cycles = 200;
             return c | 0x80;
         }
-        return 0x80;
+        return 0x00;
     }
     if (addr == 0xD011) {
         if (kbd_lock_cycles > 0) return 0x00;
@@ -544,7 +544,7 @@ static uint8_t apple_i_cpu_read(uint16_t addr)
             LOG("KEY READ D010 -> 0x%02X", ret);
             return ret;
         }
-        return 0x80;
+        return 0x00;
     }
     if (addr == 0xD011) {
         if (kbd_lock_cycles > 0) return 0x00;

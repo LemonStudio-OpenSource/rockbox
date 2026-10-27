@@ -862,76 +862,76 @@ static void EOR_X_ind() {
 /* CMP */
 static void CMP_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 2;
 }
 static void CMP_aX() {
     uint8_t val = cpu_read(dbyte(programcounter) + regX);
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 2;
 }
 static void CMP_aY() {
     uint8_t val = cpu_read(dbyte(programcounter) + regY);
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 2;
 }
 static void CMP_I() {
     uint8_t val = cpu_read(programcounter);
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 1;
 }
 static void CMP_zpg() {
     uint8_t val = cpu_read(cpu_read(programcounter));
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 1;
 }
 static void CMP_zpgX() {
     uint8_t val = cpu_read(cpu_read(programcounter) + regX);
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 1;
 }
 static void CMP_ind_Y() {
     uint8_t val = cpu_read(dbyte(cpu_read(programcounter)) + regY);
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 1;
 }
 static void CMP_X_ind() {
     uint8_t val = cpu_read(dbyte(cpu_read(programcounter) + regX));
-    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((regA < val) << 7);
+    Status = (Status & ~0b10000011) | ((regA >= val) ? 1 : 0) | ((regA == val) << 1) | ((uint8_t)(regA - val) & 0x80);
     programcounter += 1;
 }
 
 /* CPX */
 static void CPX_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
-    Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((regX < val) << 7);
+    Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((uint8_t)(regX - val) & 0x80);
     programcounter += 2;
 }
 static void CPX_I() {
     uint8_t val = cpu_read(programcounter);
-    Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((regX < val) << 7);
+    Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((uint8_t)(regX - val) & 0x80);
     programcounter += 1;
 }
 static void CPX_zpg() {
     uint8_t val = cpu_read(cpu_read(programcounter));
-    Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((regX < val) << 7);
+    Status = (Status & ~0b10000011) | ((regX >= val) ? 1 : 0) | ((regX == val) << 1) | ((uint8_t)(regX - val) & 0x80);
     programcounter += 1;
 }
 
 /* CPY */
 static void CPY_a() {
     uint8_t val = cpu_read(dbyte(programcounter));
-    Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((regY < val) << 7);
+    Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((uint8_t)(regY - val) & 0x80);
     programcounter += 2;
 }
 static void CPY_I() {
     uint8_t val = cpu_read(programcounter);
-    Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((regY < val) << 7);
+    Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((uint8_t)(regY - val) & 0x80);
     programcounter += 1;
 }
 static void CPY_zpg() {
     uint8_t val = cpu_read(cpu_read(programcounter));
-    Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((regY < val) << 7);
+    Status = (Status & ~0b10000011) | ((regY >= val) ? 1 : 0) | ((regY == val) << 1) | ((uint8_t)(regY - val) & 0x80);
     programcounter += 1;
 }
 
@@ -1074,7 +1074,7 @@ static void (*instructionArr[])(void) = {
     PHP, ORA_I, ASL_A, NULL, NOP, ORA_a, ASL_a, NULL,
     /* 0x10-0x1F */
     BPL, ORA_ind_Y, JAM, NULL, NOP, ORA_zpgX, ASL_zpgX, NULL,
-    CLC, ORA_aX, NOP, NULL, NOP, ORA_aX, ASL_aX, NULL,
+    CLC, ORA_aY, NOP, NULL, NOP, ORA_aX, ASL_aX, NULL,
     /* 0x20-0x2F */
     JSR, AND_X_ind, JAM, NULL, BIT_zpg, AND_zpg, ROL_zpg, NULL,
     PLP, AND_I, ROL_A, NULL, BIT_a, AND_a, ROL_a, NULL,

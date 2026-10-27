@@ -2554,7 +2554,7 @@ static void epub_join_path(const char *base, const char *rel, char *out, int out
             break;
         }
     }
-    if (blen + rb->strlen(rel) + 1 > out_size) {
+    if (blen + (int)rb->strlen(rel) + 1 > out_size) {
         out[0] = '\0';
         return;
     }
@@ -2804,7 +2804,10 @@ GREY_INFO_STRUCT
 static void show_image_blob(const unsigned char *blob, int len,
                             unsigned char *work, size_t work_size)
 {
-    struct bitmap bm;
+    struct bitmap bm = {
+        .width = LCD_WIDTH,
+        .height = LCD_HEIGHT,
+    };
     int ret, x, y;
 
     /* 目前只认 JPEG（EPUB 里占绝大多数） */
@@ -2831,9 +2834,7 @@ static void show_image_blob(const unsigned char *blob, int len,
         goto done;
     }
 
-    bm.width = LCD_WIDTH;
-    bm.height = LCD_HEIGHT;
-    bm.data = work;
+    bm.data = work;     /* 解码输出就放在 work 区里 */
 
     rb->splash(HZ / 4, "解码中...");
 #ifdef HAVE_ADJUSTABLE_CPU_FREQ
@@ -2847,7 +2848,7 @@ static void show_image_blob(const unsigned char *blob, int len,
     rb->cpu_boost(false);
 #endif
     if (ret < 1) {
-        rb->splash(HZ, "解码失败 (%d)", ret);
+        rb->splashf(HZ, "解码失败 (%d)", ret);
         goto done;
     }
 
@@ -2951,7 +2952,7 @@ static void view_page_image(void)
     if (rc != 0) {
         if (borrowed)
             rb->plugin_release_audio_buffer();
-        rb->splash(HZ, "解压失败 (%d)", rc);
+        rb->splashf(HZ, "解压失败 (%d)", rc);
         return;
     }
 

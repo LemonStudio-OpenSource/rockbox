@@ -112,3 +112,10 @@ uint8_t  a2_get_a(void)  { return regA; }
 uint8_t  a2_get_x(void)  { return regX; }
 uint8_t  a2_get_y(void)  { return regY; }
 uint8_t  a2_get_p(void)  { return Status; }
+void a2_set_regs(uint16_t pc, uint8_t a, uint8_t x, uint8_t y, uint8_t p) {
+    programcounter = pc;
+    regA = a;
+    regX = x;
+    regY = y;
+    Status = p;
+}

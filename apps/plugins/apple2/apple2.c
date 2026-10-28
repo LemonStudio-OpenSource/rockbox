@@ -8,13 +8,15 @@
    Apple II emulator for Rockbox (UI layer)
 
    Layout (320x240):
-     0   - 12   status bar (1 line, 10-Fixed font)
+     0   - 12   status bar (1 line, 10-Fixed)
      12  - 204  Apple II video (320x192, full frame)
-     204 - 240  virtual keyboard (3 rows x 12px, 10-Fixed font)
+     204 - 240  virtual keyboard (3 rows x 12px, 10-Fixed)
 
-   Keyboard: every key goes into a FIFO and is later fed to the
-   Apple II keyboard latch. BACKSPACE sends 0x08 (Ctrl-H) which
-   is what Apple II+ GETLN expects.
+   Keyboard: keys go into a FIFO and are fed to the Apple II
+   keyboard latch when it is free. BACKSPACE sends 0x08 0x20 0x08
+   so GETLN deletes the char, the space erases the glyph on the
+   text page, and the second backspace removes the space from
+   the GETLN buffer again.
    ============================================================ */
 
 /* ---------------- logging ---------------- */
@@ -306,7 +308,11 @@ static void cc_lookup(const char *abbr) {
    Erase the typed command from the Apple II screen
    ============================================================ */
 static void erase_typed(void) {
-    for (int i = 0; i < shadow_len; i++) key_q_push(0x08); /* Ctrl-H backspace */
+    for (int i = 0; i < shadow_len; i++) {
+        key_q_push(0x08);   /* GETLN deletes buffer char, cursor left */
+        key_q_push(0x20);   /* space overwrites the glyph, cursor right */
+        key_q_push(0x08);   /* delete the space from buffer, cursor left */
+    }
     shadow_len = 0;
 }
 
@@ -559,8 +565,12 @@ enum plugin_status plugin_start(const void *parameter) {
                         shadow_buf[shadow_len++] = ch;
                 }
             } else if (btn == BUTTON_LEFT) {
-                key_q_push(0x08);          /* Apple II+ backspace */
-                if (shadow_len > 0) shadow_len--;
+                if (shadow_len > 0) {
+                    key_q_push(0x08);   /* delete char, cursor left */
+                    key_q_push(0x20);   /* space overwrites glyph */
+                    key_q_push(0x08);   /* delete the space, cursor left */
+                    shadow_len--;
+                }
             } else if (btn == BUTTON_RIGHT) {
                 key_q_clear();
                 playback_pos = playback_len = 0;

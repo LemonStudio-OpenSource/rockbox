@@ -148,7 +148,7 @@ static void draw_keyboard(void) {
         int ly = KEY_TOP + r * KEY_H;
         for (c = 0; c < KEY_COLS; c++) {
             char buf2[4];
-            int lx = c * (SCREEN_W_PLACEHOLDER / KEY_COLS);
+            int lx = c * (320 / KEY_COLS);
             int sel = (r * KEY_COLS + c == kb_index);
 
             if (kb_cell_page(r, c)) {

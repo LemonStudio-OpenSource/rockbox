@@ -38,5 +38,6 @@ uint8_t  a2_get_a(void);
 uint8_t  a2_get_x(void);
 uint8_t  a2_get_y(void);
 uint8_t  a2_get_p(void);
+void a2_set_regs(uint16_t pc, uint8_t a, uint8_t x, uint8_t y, uint8_t p);
 
 #endif

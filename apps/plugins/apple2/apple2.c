@@ -7,12 +7,11 @@
 /* ============================================================
    Apple II emulator for Rockbox (UI layer)
    Keyboard model copied from apple_i.c:
-     - input_buf is a self-maintained line buffer
-     - SELECT appends, LEFT deletes, PLAY commits
-     - On PLAY, short commands are checked first
-       (S/R/P/LP/A/H/RST/EX/LOAD/B/CC)
-     - If not a command, the whole line is replayed to the
-       Apple II through a key FIFO, one char at a time
+     input_buf  : self-maintained line buffer (SELECT appends,
+                  LEFT deletes, PLAY commits)
+     playback_buf : on PLAY, short commands are checked first;
+                  if not a command, the whole line is copied
+                  here and fed to the Apple II one char at a time
    ============================================================ */
 
 /* ---------------- logging ---------------- */
@@ -44,6 +43,18 @@ static void log_message(const char *fmt, ...) {
 }
 #define LOG(fmt, ...) log_message(fmt, ##__VA_ARGS__)
 
+static void log_flush(void) {
+    if (!log_buf || log_buf_used == 0) return;
+    rb->mkdir("/apple2");
+    rb->mkdir("/apple2/log");
+    int fd = rb->open("/apple2/log/apple2.log",
+                      O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd >= 0) {
+        rb->write(fd, log_buf, log_buf_used);
+        rb->close(fd);
+    }
+}
+
 /* ============================================================
    Load ROM
    ============================================================ */
@@ -52,6 +63,7 @@ static bool load_rom(void) {
     int fd = rb->open(path, O_RDONLY);
     if (fd < 0) return false;
     off_t size = rb->ffilesize(fd);
+    LOG("ROM size %ld", (long)size);
     static uint8_t rombuf[0x5000];
     uint8_t *dst = rombuf;
     uint32_t rd = size;
@@ -67,11 +79,14 @@ static bool load_rom(void) {
 
 /* ============================================================
    Screen layout
+     0   - 14   one-line status bar
+     14  - 180  Apple II video (320x166, bottom 26px cropped)
+     180 - 240  virtual keyboard (3 rows x 20px)
    ============================================================ */
 #define VIDEO_W   320
-#define VIDEO_H   160
-#define VIDEO_TOP 20
-#define KEY_TOP   (VIDEO_TOP + VIDEO_H)
+#define VIDEO_TOP 14
+#define VIDEO_H   166
+#define KEY_TOP   (VIDEO_TOP + VIDEO_H)   /* 180 */
 #define KEY_H     20
 #define KEY_ROWS  3
 #define KEY_COLS  20
@@ -84,7 +99,7 @@ static bool load_rom(void) {
 #define COLOR_KEY_SEL 0xFFFF
 
 /* ============================================================
-   Virtual keyboard (4 pages, 3x20)
+   Virtual keyboard: 4 pages, 3 rows x 20 cols
    ============================================================ */
 static int kb_page = 0;
 static int kb_index = 0;
@@ -119,7 +134,7 @@ static int kb_cell_page(int r, int c) { return (r == 2 && c == 19); }
 static int kb_cell_space(int r, int c){ return ((kb_page == 0 || kb_page == 1) && r == 1 && c == 6); }
 
 /* ============================================================
-   Line buffer + playback FIFO (same as apple_i.c)
+   Line buffer + playback buffer (exactly like apple_i.c)
    ============================================================ */
 static char input_buf[1024];
 static int  input_len = 0;
@@ -128,31 +143,12 @@ static char playback_buf[4096];
 static int  playback_len = 0;
 static int  playback_pos = 0;
 
-#define KEY_QUEUE_SIZE 256
-static uint8_t key_queue[KEY_QUEUE_SIZE];
-static volatile int key_q_head = 0;
-static volatile int key_q_tail = 0;
-
-static inline int key_q_empty(void) { return key_q_head == key_q_tail; }
-static inline int key_q_full(void)  { return ((key_q_tail + 1) % KEY_QUEUE_SIZE) == key_q_head; }
-static inline void key_q_push(uint8_t c) {
-    if (!key_q_full()) {
-        key_queue[key_q_tail] = c;
-        key_q_tail = (key_q_tail + 1) % KEY_QUEUE_SIZE;
-    }
-}
-static inline uint8_t key_q_pop(void) {
-    if (key_q_empty()) return 0;
-    uint8_t c = key_queue[key_q_head];
-    key_q_head = (key_q_head + 1) % KEY_QUEUE_SIZE;
-    return c;
-}
-static inline void key_q_clear(void) { key_q_head = key_q_tail = 0; }
-
 /* ============================================================
-   Save / Restore state
+   Save / Restore
    ============================================================ */
 static bool save_state(void) {
+    rb->mkdir("/apple2");
+    rb->mkdir("/apple2/state");
     int fd = rb->open("/apple2/state/apple2_ram.bin",
                       O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
@@ -272,26 +268,26 @@ static void cc_lookup(const char *abbr) {
 }
 
 /* ============================================================
-   PLAY handler: check short commands first, else replay line
+   PLAY handler: short commands first, else replay the line
    ============================================================ */
 static void commit_line(void) {
     input_buf[input_len] = '\0';
 
-    /* ---------- short commands (same set as apple_i.c) ---------- */
     if (input_len == 1 && input_buf[0] == 'S') {
-        save_state();
-        rb->splash(HZ, "SAVED");
+        if (save_state()) rb->splash(HZ, "SAVED");
+        else              rb->splash(HZ, "SAVE FAIL");
         input_len = 0;
         return;
     }
     if (input_len == 1 && input_buf[0] == 'R') {
         if (restore_state()) rb->splash(HZ, "RESTORED");
-        else                  rb->splash(HZ, "NO STATE");
+        else                 rb->splash(HZ, "NO STATE");
         input_len = 0;
         return;
     }
     if (input_len == 1 && input_buf[0] == 'P') {
-        load_program();
+        if (load_program()) rb->splash(HZ, "LOADING");
+        else                rb->splash(HZ, "NO FILE");
         input_len = 0;
         return;
     }
@@ -301,7 +297,8 @@ static void commit_line(void) {
         if (pos < input_len) {
             char path[128];
             rb->snprintf(path, sizeof(path), "/apple2/programs/%s", input_buf + pos);
-            load_program_from_path(path);
+            if (load_program_from_path(path)) rb->splash(HZ, "LOADING");
+            else                              rb->splash(HZ, "NO FILE");
         } else {
             load_program();
         }
@@ -330,7 +327,7 @@ static void commit_line(void) {
         return;
     }
     if (input_len == 1 && input_buf[0] == 'H') {
-        rb->splash(HZ * 3, "S/R/P/LP/A/H/RST/EX/LOAD/B/CC");
+        rb->splash(HZ * 3, "S/R/P/LP/A/H/RST/EX/B/CC");
         input_len = 0;
         return;
     }
@@ -338,13 +335,7 @@ static void commit_line(void) {
         a2_reset();
         input_len = 0;
         playback_pos = playback_len = 0;
-        key_q_clear();
         rb->splash(HZ, "RESET");
-        return;
-    }
-    if (input_len == 2 && input_buf[0] == 'E' && input_buf[1] == 'X') {
-        input_len = 0;
-        /* caller handles exit */
         return;
     }
     if (input_len == 1 && input_buf[0] == 'B') {
@@ -360,7 +351,7 @@ static void commit_line(void) {
         return;
     }
 
-    /* ---------- not a command: replay whole line to Apple II ---------- */
+    /* not a command: replay whole line to the Apple II */
     if (input_len > 0) {
         rb->memcpy(playback_buf, input_buf, input_len);
         playback_buf[input_len] = '\r';
@@ -368,7 +359,9 @@ static void commit_line(void) {
         playback_pos = 0;
         input_len = 0;
     } else {
-        key_q_push('\r');
+        playback_buf[0] = '\r';
+        playback_len = 1;
+        playback_pos = 0;
     }
 }
 
@@ -378,11 +371,8 @@ static void commit_line(void) {
 static void draw_status(void) {
     char buf[96];
     rb->lcd_set_foreground(COLOR_STATUS);
-    rb->snprintf(buf, sizeof(buf), "PC:%04X A:%02X X:%02X Y:%02X",
-                 a2_get_pc(), a2_get_a(), a2_get_x(), a2_get_y());
+    rb->snprintf(buf, sizeof(buf), "PC:%04X >%.60s", a2_get_pc(), input_buf);
     rb->lcd_puts(0, 0, buf);
-    rb->snprintf(buf, sizeof(buf), ">%.80s", input_buf);
-    rb->lcd_puts(0, 1, buf);
 }
 
 static void draw_keyboard(void) {
@@ -454,13 +444,14 @@ enum plugin_status plugin_start(const void *parameter) {
     a2_reset();
     input_len = 0;
     playback_len = playback_pos = 0;
-    key_q_clear();
 
     int btn;
     while (1) {
-        while (playback_pos < playback_len && !key_q_full()) {
-            uint8_t c = playback_buf[playback_pos++];
-            key_q_push(c);
+        /* Feed one char into the Apple II keyboard latch.
+           $C000 returns a2_kbd_key, $C010 clears it, so only
+           push a new char when the latch is free. */
+        if (playback_pos < playback_len && a2_kbd_key == 0) {
+            a2_press_key(playback_buf[playback_pos++]);
         }
 
         for (int i = 0; i < 3000; i++) {
@@ -490,6 +481,7 @@ enum plugin_status plugin_start(const void *parameter) {
 
             if (btn == BUTTON_MENU) {
                 LOG("=== EXIT ===");
+                log_flush();
 #ifdef HAVE_WHEEL_POSITION
                 rb->wheel_send_events(true);
 #endif
@@ -497,28 +489,36 @@ enum plugin_status plugin_start(const void *parameter) {
             }
 
             if (btn == BUTTON_PLAY) {
-                /* EX is handled here so we can return */
-                input_buf[input_len] = '\0';
-                if (input_len == 2 && input_buf[0] == 'E' && input_buf[1] == 'X') {
-                    input_len = 0;
-#ifdef HAVE_WHEEL_POSITION
-                    rb->wheel_send_events(true);
-#endif
-                    return PLUGIN_OK;
-                }
-                commit_line();
-            } else if (btn == BUTTON_SELECT) {
-                int r = kb_index / KEY_COLS;
-                int c = kb_index % KEY_COLS;
-                if (kb_cell_page(r, c)) {
-                    kb_page = (kb_page + 1) % KB_PAGES;
-                } else if (kb_cell_space(r, c)) {
-                    if (input_len < (int)sizeof(input_buf) - 1)
-                        input_buf[input_len++] = ' ';
+                if (playback_pos < playback_len) {
+                    /* replay in progress, ignore */
                 } else {
-                    char ch = kb_get(r, c);
-                    if (ch && input_len < (int)sizeof(input_buf) - 1)
-                        input_buf[input_len++] = ch;
+                    input_buf[input_len] = '\0';
+                    if (input_len == 2 && input_buf[0] == 'E' && input_buf[1] == 'X') {
+                        input_len = 0;
+                        log_flush();
+#ifdef HAVE_WHEEL_POSITION
+                        rb->wheel_send_events(true);
+#endif
+                        return PLUGIN_OK;
+                    }
+                    commit_line();
+                }
+            } else if (btn == BUTTON_SELECT) {
+                if (playback_pos < playback_len) {
+                    /* ignore during replay */
+                } else {
+                    int r = kb_index / KEY_COLS;
+                    int c = kb_index % KEY_COLS;
+                    if (kb_cell_page(r, c)) {
+                        kb_page = (kb_page + 1) % KB_PAGES;
+                    } else if (kb_cell_space(r, c)) {
+                        if (input_len < (int)sizeof(input_buf) - 1)
+                            input_buf[input_len++] = ' ';
+                    } else {
+                        char ch = kb_get(r, c);
+                        if (ch && input_len < (int)sizeof(input_buf) - 1)
+                            input_buf[input_len++] = ch;
+                    }
                 }
             } else if (btn == BUTTON_LEFT) {
                 if (input_len > 0) input_len--;
@@ -527,7 +527,6 @@ enum plugin_status plugin_start(const void *parameter) {
                     playback_pos = playback_len = 0;
                 } else {
                     input_len = 0;
-                    key_q_clear();
                     a2_reset();
                 }
             } else if (btn == BUTTON_SCROLL_FWD) {

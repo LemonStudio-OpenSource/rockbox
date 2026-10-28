@@ -77,24 +77,23 @@ static bool load_rom(void) {
 
 /* ============================================================
    Virtual keyboard (2 rows x 20 cols)
-   Row 2 tail slots: col 18 = space, col 19 = ENTER
+   Flat index: row * KEY_COLS + col
+   Row 2: col 6 = space (drawn "SP"), col 19 = ENTER (drawn "CR")
    ============================================================ */
 #define KEY_ROWS 2
 #define KEY_COLS 20
+#define KEY_TOTAL (KEY_ROWS * KEY_COLS)
 static const char kb_layout[KEY_ROWS][KEY_COLS] = {
     "ABCDEFGHIJKLMNOPQRST",
-    "UVWXYZ 0123456789_#"
+    "UVWXYZ 0123456789_#"   /* 19 chars + NUL; col 19 rendered as "CR" */
 };
-static int kb_row = 0, kb_col = 0;
+static int kb_index = 0;
 
-static char kb_current_char(void) {
-    return kb_layout[kb_row][kb_col];
-}
 static int kb_cell_space(int r, int c) {
-    return (r == 1 && c == 18);
+    return (r == 1 && c == 6);   /* real space character in row 2 */
 }
 static int kb_cell_enter(int r, int c) {
-    return (r == 1 && c == 19);
+    return (r == 1 && c == 19);  /* trailing NUL slot, rendered as "CR" */
 }
 
 /* ============================================================
@@ -119,12 +118,13 @@ static void draw_keyboard(void) {
             } else if (kb_cell_enter(r, c)) {
                 buf2[0] = 'C'; buf2[1] = 'R'; buf2[2] = '\0';
             } else {
-                buf2[0] = kb_layout[r][c]; buf2[1] = '\0';
+                buf2[0] = kb_layout[r][c];
+                buf2[1] = '\0';
             }
             /* 320px / 20 cols = 16px per slot */
             int lx = 2 + c * (320 / KEY_COLS);
             int ly = KEY_TOP + r * KEY_H;
-            if (r == kb_row && c == kb_col) {
+            if (r * KEY_COLS + c == kb_index) {
                 rb->lcd_set_foreground(COLOR_BG);
                 rb->lcd_set_background(COLOR_KEY_SEL);
             } else {
@@ -185,18 +185,18 @@ enum plugin_status plugin_start(const void *parameter) {
         }
 
 #ifdef HAVE_WHEEL_POSITION
-        /* wheel moves keyboard cursor horizontally */
+        /* wheel scrolls the flat keyboard index */
         int wheel = rb->wheel_status();
         if (wheel >= 0 && last_wheel >= 0) {
             int delta = wheel - last_wheel;
             if (delta < -48) delta += 96;
             else if (delta > 48) delta -= 96;
             if (delta >= 2) {
-                kb_col += delta / 2;
-                if (kb_col >= KEY_COLS) kb_col -= KEY_COLS;
+                kb_index += delta / 2;
+                while (kb_index >= KEY_TOTAL) kb_index -= KEY_TOTAL;
             } else if (delta <= -2) {
-                kb_col += delta / 2;
-                if (kb_col < 0) kb_col += KEY_COLS;
+                kb_index += delta / 2;
+                while (kb_index < 0) kb_index += KEY_TOTAL;
             }
         }
         last_wheel = wheel;
@@ -213,12 +213,14 @@ enum plugin_status plugin_start(const void *parameter) {
 #endif
                 return PLUGIN_OK;
             } else if (btn == BUTTON_SELECT) {
-                if (kb_cell_space(kb_row, kb_col)) {
+                int r = kb_index / KEY_COLS;
+                int c = kb_index % KEY_COLS;
+                if (kb_cell_space(r, c)) {
                     a2_press_key(' ');
-                } else if (kb_cell_enter(kb_row, kb_col)) {
+                } else if (kb_cell_enter(r, c)) {
                     a2_press_key('\r');
                 } else {
-                    a2_press_key(kb_current_char());
+                    a2_press_key(kb_layout[r][c]);
                 }
             } else if (btn == BUTTON_PLAY) {
                 a2_press_key('\r');
@@ -226,14 +228,12 @@ enum plugin_status plugin_start(const void *parameter) {
                 a2_press_key(0x1B);   /* ESC */
             } else if (btn == BUTTON_LEFT) {
                 a2_press_key(0x08);   /* BS */
-            } else if (btn == BUTTON_UP) {
-                kb_row--; if (kb_row < 0) kb_row = KEY_ROWS - 1;
-            } else if (btn == BUTTON_DOWN) {
-                kb_row++; if (kb_row >= KEY_ROWS) kb_row = 0;
             } else if (btn == BUTTON_SCROLL_FWD) {
-                kb_col++; if (kb_col >= KEY_COLS) kb_col = 0;
+                kb_index++;
+                if (kb_index >= KEY_TOTAL) kb_index = 0;
             } else if (btn == BUTTON_SCROLL_BACK) {
-                kb_col--; if (kb_col < 0) kb_col = KEY_COLS - 1;
+                kb_index--;
+                if (kb_index < 0) kb_index = KEY_TOTAL - 1;
             }
         }
 

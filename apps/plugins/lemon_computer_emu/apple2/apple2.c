@@ -189,8 +189,8 @@ static int  playback_pos = 0;
 static bool save_state(void) {
     rb->mkdir("/lemon_computer_emu");
     rb->mkdir("/lemon_computer_emu/states");
-    rb->mkdir("/lemon_computer_emu/states/apple")
-    rb->mkdir("/lemon_computer_emu/states/apple/apple2")
+    rb->mkdir("/lemon_computer_emu/states/apple");
+    rb->mkdir("/lemon_computer_emu/states/apple/apple2");
     int fd = rb->open("/lemon_computer_emu/states/apple/apple2/apple2_ram.bin",
         O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;

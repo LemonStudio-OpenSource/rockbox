@@ -59,11 +59,11 @@ static LOGGER_UNUSED void logger_mkdir_parents(const char* path)
     if (!path)
         return;
 
-    n = strlen(path);
+    n = rb->strlen(path);
     if (n == 0 || n >= sizeof(tmp))
         return;
 
-    memcpy(tmp, path, n + 1);
+    rb->memcpy(tmp, path, n + 1);
 
     for (p = tmp + 1; *p; p++) {
         if (*p == '/') {

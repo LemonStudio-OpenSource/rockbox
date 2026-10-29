@@ -1,0 +1,6 @@
+lemon_computer_emu.c
+apple1/apple1.c
+apple2/apple2.c
+apple2/a2core.c
+apple2/a2video.c
+apple2/a2font.c

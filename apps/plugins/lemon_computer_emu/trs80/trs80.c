@@ -9,20 +9,20 @@
    Core: zilogz80.c
    Layout (320x240):
      0   - 12   status bar
-     12  - 188  video 64x16 text
+     12  - 177  video 64x16 text
      177 - 188  input line
      188 - 240  virtual keyboard 4 rows x 12 cols
    ============================================================ */
 
-#define TRS80_LOG_PATH  "/lemon_computer_emu/logs/tandy/trs80/trs80.log"
+#define TRS80_LOG_PATH  "/lemon_computer_emu/log/trs80.log"
 #define TRS80_LOG_CAP   (64 * 1024)
-#define ROM_A_PATH      "/lemon_computer_emu/roms/tandy/trs80/rom_a_L2_v13.bin"
-#define ROM_B_PATH      "/lemon_computer_emu/roms/tandy/trs80/rom_b_L2_v13.bin"
+#define ROM_A_PATH      "/lemon_computer_emu/roms/trs80/rom_a_L2_v13.bin"
+#define ROM_B_PATH      "/lemon_computer_emu/roms/trs80/rom_b_L2_v13.bin"
 #define ROM_A_SIZE      0x2000
 #define ROM_B_SIZE      0x1000
-#define SAVE_PATH       "/lemon_computer_emu/states/tandy/trs80/state.bin"
-#define PROG_DIR        "/lemon_computer_emu/programs/tandy/trs80"
-#define PROG_DEFAULT    "/lemon_computer_emu/programs/tandy/trs80/TRS80_PROGRAM.txt"
+#define SAVE_PATH       "/lemon_computer_emu/trs80/state.bin"
+#define PROG_DIR        "/lemon_computer_emu/trs80/programs"
+#define PROG_DEFAULT    "/lemon_computer_emu/trs80/programs/trs80_program.txt"
 
 #define VIDEO_TOP 12
 #define VIDEO_ROWS 16
@@ -39,25 +39,24 @@
 #define COLOR_STATUS 0xFFFF
 #define COLOR_KEY_SEL 0xFFFF
 
-   /* ---------------- logging ---------------- */
+/* ---------------- logging ---------------- */
 static char trs80_log_fallback[4096];
 static logger_t trs80_log;
 
 static void log_init(void) {
     size_t avail = 0;
-    char* buf = rb->plugin_get_buffer(&avail);
+    char *buf = rb->plugin_get_buffer(&avail);
     size_t cap;
     if (!buf || avail < 4096) {
         buf = trs80_log_fallback;
         cap = sizeof(trs80_log_fallback);
-    }
-    else {
+    } else {
         cap = (avail < TRS80_LOG_CAP) ? avail : TRS80_LOG_CAP;
     }
     logger_init(&trs80_log, buf, cap, TRS80_LOG_PATH);
 }
 
-static void trs80_log_msg(const char* fmt, ...) {
+static void trs80_log_msg(const char *fmt, ...) {
     char tmp[256];
     va_list args;
     if (!trs80_log.enabled) return;
@@ -77,14 +76,14 @@ static Z80 cpu;
 static uint8_t kb_row[8];
 static int kb_current_row = 0;
 
-static uint8_t trs80_read(void* ctx, uint16_t addr) {
+static uint8_t trs80_read(void *ctx, uint16_t addr) {
     (void)ctx;
     if (addr >= 0x3800 && addr <= 0x38FF)
         return kb_row[kb_current_row];
     return mem[addr];
 }
 
-static void trs80_write(void* ctx, uint16_t addr, uint8_t val) {
+static void trs80_write(void *ctx, uint16_t addr, uint8_t val) {
     (void)ctx;
     if (addr >= 0x3800 && addr <= 0x38FF) {
         switch (addr & 0xFF) {
@@ -102,8 +101,8 @@ static void trs80_write(void* ctx, uint16_t addr, uint8_t val) {
     if (addr >= 0x4000) mem[addr] = val;
 }
 
-static uint8_t trs80_in(void* ctx, uint16_t port) { (void)ctx; (void)port; return 0xFF; }
-static void trs80_out(void* ctx, uint16_t port, uint8_t val) { (void)ctx; (void)port; (void)val; }
+static uint8_t trs80_in(void *ctx, uint16_t port) { (void)ctx; (void)port; return 0xFF; }
+static void trs80_out(void *ctx, uint16_t port, uint8_t val) { (void)ctx; (void)port; (void)val; }
 
 /* ============================================================
    ROM loading
@@ -112,14 +111,24 @@ static bool load_roms(void) {
     int fd = rb->open(ROM_A_PATH, O_RDONLY);
     if (fd < 0) { LOG("ROM A open failed"); return false; }
     off_t s = rb->ffilesize(fd);
-    if (s < ROM_A_SIZE) { LOG("ROM A too small: %ld", (long)s); rb->close(fd); return false; }
+    if (s < ROM_A_SIZE) {
+        LOG("ROM A too small: %d", (int)s);
+        rb->close(fd);
+        return false;
+    }
     if (rb->read(fd, mem, ROM_A_SIZE) != ROM_A_SIZE) { rb->close(fd); return false; }
     rb->close(fd);
 
     fd = rb->open(ROM_B_PATH, O_RDONLY);
     if (fd < 0) { LOG("ROM B open failed"); return false; }
     s = rb->ffilesize(fd);
-    if (s < ROM_B_SIZE) { LOG("ROM B too small: %ld", (long)s); rb->close(fd); return false; }
+    /* 文件是 8KB，但有效数据只有前 4KB（0x0000-0x0FFF），
+       0x1000-0x1FFF 是零填充。只读前 4KB 到 0x2000。 */
+    if (s < ROM_B_SIZE) {
+        LOG("ROM B too small: %d (need at least 4096)", (int)s);
+        rb->close(fd);
+        return false;
+    }
     if (rb->read(fd, mem + 0x2000, ROM_B_SIZE) != ROM_B_SIZE) { rb->close(fd); return false; }
     rb->close(fd);
 
@@ -130,20 +139,17 @@ static bool load_roms(void) {
 /* ============================================================
    Font + video
    ============================================================ */
-static struct font* fixed_font = NULL;
 static int char_w = 6, char_h = 10;
 static int visible_cols = 53;
 
 static bool init_font(void) {
-    fixed_font = rb->font_load("/.rockbox/fonts/08-Rockfont.fnt");
-    if (!fixed_font) fixed_font = rb->font_load("/.rockbox/fonts/10-Fixed.fnt");
-    if (!fixed_font) { rb->splash(HZ * 2, "Font not found"); return false; }
-    rb->lcd_setfont(fixed_font);
+    rb->lcd_setfont(FONT_UI);
     int w = 0, h = 0;
     rb->lcd_getstringsize("M", &w, &h);
     if (w < 1) w = 6;
     if (h < 1) h = 10;
-    char_w = w; char_h = h;
+    char_w = w;
+    char_h = h;
     visible_cols = 320 / char_w;
     if (visible_cols > VIDEO_COLS) visible_cols = VIDEO_COLS;
     LOG("font %dx%d, visible_cols=%d", char_w, char_h, visible_cols);
@@ -167,17 +173,17 @@ static void render_text(void) {
 /* ============================================================
    Virtual keyboard
    ============================================================ */
-struct key_def { uint8_t row, bit; const char* label; };
+struct key_def { uint8_t row, bit; const char *label; };
 
 static const struct key_def key_map[45] = {
-    { 0,1,"A" },{ 0,2,"B" },{ 0,3,"C" },{ 0,4,"D" },{ 0,5,"E" },{ 0,6,"F" },
-    { 0,7,"G" },{ 1,0,"H" },{ 1,1,"I" },{ 1,2,"J" },{ 1,3,"K" },{ 1,4,"L" },
-    { 1,5,"M" },{ 1,6,"N" },{ 1,7,"O" },{ 2,0,"P" },{ 2,1,"Q" },{ 2,2,"R" },
-    { 2,3,"S" },{ 2,4,"T" },{ 2,5,"U" },{ 2,6,"V" },{ 2,7,"W" },{ 3,0,"X" },
-    { 3,1,"Y" },{ 3,2,"Z" },{ 4,0,"0" },{ 4,1,"1" },{ 4,2,"2" },{ 4,3,"3" },
-    { 4,4,"4" },{ 4,5,"5" },{ 4,6,"6" },{ 4,7,"7" },{ 5,0,"8" },{ 5,1,"9" },
-    { 0,0,"@" },{ 5,2,":" },{ 5,3,";" },{ 5,4,"," },{ 5,5,"-" },{ 5,6,"." },
-    { 5,7,"/" },{ 6,7,"SP" },{ 7,0,"SH" },
+    {0,1,"A"},{0,2,"B"},{0,3,"C"},{0,4,"D"},{0,5,"E"},{0,6,"F"},
+    {0,7,"G"},{1,0,"H"},{1,1,"I"},{1,2,"J"},{1,3,"K"},{1,4,"L"},
+    {1,5,"M"},{1,6,"N"},{1,7,"O"},{2,0,"P"},{2,1,"Q"},{2,2,"R"},
+    {2,3,"S"},{2,4,"T"},{2,5,"U"},{2,6,"V"},{2,7,"W"},{3,0,"X"},
+    {3,1,"Y"},{3,2,"Z"},{4,0,"0"},{4,1,"1"},{4,2,"2"},{4,3,"3"},
+    {4,4,"4"},{4,5,"5"},{4,6,"6"},{4,7,"7"},{5,0,"8"},{5,1,"9"},
+    {0,0,"@"},{5,2,":"},{5,3,";"},{5,4,","},{5,5,"-"},{5,6,"."},
+    {5,7,"/"},{6,7,"SP"},{7,0,"SH"},
 };
 
 #define KEY_COUNT ((int)(sizeof(key_map)/sizeof(key_map[0])))
@@ -189,9 +195,30 @@ static bool is_shift_key(int idx) {
     return key_map[idx].row == 7 && key_map[idx].bit == 0;
 }
 
-static bool char_to_matrix(char ch, int* row, int* bit) {
+/* 把字符映射到 (row, bit, shift)。返回 false 表示无法映射。 */
+static bool char_to_matrix_ex(char ch, int *row, int *bit, bool *shift) {
+    *shift = false;
     if (ch == '\r' || ch == '\n') { *row = 6; *bit = 0; return true; }
     if (ch == ' ') { *row = 6; *bit = 7; return true; }
+
+    /* 移位数字：SHIFT + 0-7 */
+    static const char shifted_digits[] = "_!\"#$%&'";
+    for (int i = 0; i < 8; i++) {
+        if (ch == shifted_digits[i]) {
+            *row = 4; *bit = i; *shift = true;
+            return true;
+        }
+    }
+    /* 移位符号：SHIFT + 8 9 : ; , - . / */
+    if (ch == '(') { *row = 5; *bit = 0; *shift = true; return true; }
+    if (ch == ')') { *row = 5; *bit = 1; *shift = true; return true; }
+    if (ch == '*') { *row = 5; *bit = 2; *shift = true; return true; }
+    if (ch == '+') { *row = 5; *bit = 3; *shift = true; return true; }
+    if (ch == '<') { *row = 5; *bit = 4; *shift = true; return true; }
+    if (ch == '=') { *row = 5; *bit = 5; *shift = true; return true; }
+    if (ch == '>') { *row = 5; *bit = 6; *shift = true; return true; }
+    if (ch == '?') { *row = 5; *bit = 7; *shift = true; return true; }
+
     for (int i = 0; i < KEY_COUNT; i++) {
         if (key_map[i].label[0] == ch && key_map[i].label[1] == 0) {
             *row = key_map[i].row;
@@ -213,22 +240,39 @@ static int replay_len = 0;
 static int replay_pos = -1;
 static int replay_phase = 0;
 static int replay_frames = 0;
+static bool replay_shift = false;
 
-/* LP 命令临时提示 */
 static char lp_lines[2][64];
 static int lp_timer = 0;
+
+static void clear_kb_rows(void) {
+    for (int i = 0; i < 8; i++) kb_row[i] = 0xFF;
+}
+
+static void press_char(int pos) {
+    int r, b;
+    bool sh;
+    if (!char_to_matrix_ex(replay_buf[pos], &r, &b, &sh))
+        return;
+    if (sh) {
+        kb_row[7] &= ~(1 << 0);
+        replay_shift = true;
+    } else {
+        replay_shift = false;
+    }
+    kb_row[r] &= ~(1 << b);
+    replay_frames = 2;
+    replay_phase = 0;
+}
 
 static void start_replay(void) {
     if (replay_len == 0) return;
     replay_pos = 0;
     replay_phase = 0;
     replay_frames = 0;
-    for (int i = 0; i < 8; i++) kb_row[i] = 0xFF;
-    int r, b;
-    if (char_to_matrix(replay_buf[0], &r, &b)) {
-        kb_row[r] &= ~(1 << b);
-        replay_frames = 2;
-    }
+    replay_shift = false;
+    clear_kb_rows();
+    press_char(0);
 }
 
 static void step_replay(void) {
@@ -236,14 +280,9 @@ static void step_replay(void) {
 
     if (replay_frames > 0) { replay_frames--; return; }
 
-    if (replay_phase == 0) {
-        for (int i = 0; i < 8; i++) kb_row[i] = 0xFF;
-        replay_phase = 1;
-        replay_frames = 1;
-        return;
-    }
-
-    /* phase 1: 准备下一个字符 */
+    /* 字符释放 */
+    clear_kb_rows();
+    replay_shift = false;
     replay_pos++;
     if (replay_pos >= replay_len) {
         replay_len = 0;
@@ -251,18 +290,10 @@ static void step_replay(void) {
         replay_phase = 0;
         return;
     }
-    int r, b;
-    if (!char_to_matrix(replay_buf[replay_pos], &r, &b)) {
-        replay_pos++;
-        if (replay_pos >= replay_len) { replay_len = 0; replay_pos = -1; }
-        return;
-    }
-    kb_row[r] &= ~(1 << b);
-    replay_phase = 0;
-    replay_frames = 2;
+    press_char(replay_pos);
 }
 
-static bool load_program_from_path(const char* path) {
+static bool load_program_from_path(const char *path) {
     int fd = rb->open(path, O_RDONLY);
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
@@ -312,26 +343,29 @@ static bool restore_state(void) {
 static void list_programs(void) {
     lp_lines[0][0] = 0;
     lp_lines[1][0] = 0;
-    lp_timer = 180;   /* 3 秒 */
+    lp_timer = 180;
 
-    DIR* dir = rb->opendir(PROG_DIR);
+    DIR *dir = rb->opendir(PROG_DIR);
     if (!dir) {
         rb->snprintf(lp_lines[0], sizeof(lp_lines[0]), "(no program dir)");
         return;
     }
     int idx = 0;
-    struct dirent* entry;
+    struct dirent *entry;
     while ((entry = rb->readdir(dir)) != NULL && idx < 8) {
         if (entry->d_name[0] == '.') continue;
         int nlen = rb->strlen(entry->d_name);
         if (nlen < 5) continue;
         if (rb->strcasecmp(entry->d_name + nlen - 4, ".txt") != 0) continue;
         int line = idx / 4;
-        int pos = (idx % 4) * 15;
-        if (pos + nlen >= 63) continue;
-        if (lp_lines[line][0])
-            rb->strncat(lp_lines[line], " ", sizeof(lp_lines[line]) - rb->strlen(lp_lines[line]) - 1);
-        rb->strncat(lp_lines[line], entry->d_name, sizeof(lp_lines[line]) - rb->strlen(lp_lines[line]) - 1);
+        int cur = rb->strlen(lp_lines[line]);
+        int room = (int)sizeof(lp_lines[line]) - cur;
+        if (room > 1) {
+            if (cur > 0)
+                rb->snprintf(lp_lines[line] + cur, (size_t)room, " %s", entry->d_name);
+            else
+                rb->snprintf(lp_lines[line], sizeof(lp_lines[line]), "%s", entry->d_name);
+        }
         idx++;
     }
     rb->closedir(dir);
@@ -340,7 +374,7 @@ static void list_programs(void) {
 }
 
 /* ============================================================
-   Input drawing
+   UI
    ============================================================ */
 static void draw_input_line(void) {
     rb->lcd_set_foreground(COLOR_TEXT);
@@ -375,16 +409,13 @@ static void draw_keyboard(void) {
         if (sel && pressed) {
             rb->lcd_set_foreground(COLOR_BG);
             rb->lcd_set_background(COLOR_KEY_SEL);
-        }
-        else if (sel) {
+        } else if (sel) {
             rb->lcd_set_foreground(COLOR_KEY_SEL);
             rb->lcd_set_background(COLOR_BG);
-        }
-        else if (pressed) {
+        } else if (pressed) {
             rb->lcd_set_foreground(COLOR_BG);
             rb->lcd_set_background(COLOR_TEXT);
-        }
-        else {
+        } else {
             rb->lcd_set_foreground(COLOR_TEXT);
             rb->lcd_set_background(COLOR_BG);
         }
@@ -400,7 +431,7 @@ static void draw_status(void) {
     char buf[64];
     rb->lcd_set_foreground(COLOR_STATUS);
     rb->snprintf(buf, sizeof(buf), "TRS-80 PC:%04X A:%02X F:%02X%s",
-        cpu.pc, cpu.a, cpu.f, shift_pending ? " SH" : "");
+                 cpu.pc, cpu.a, cpu.f, shift_pending ? " SH" : "");
     rb->lcd_puts(0, 0, buf);
 }
 
@@ -455,7 +486,6 @@ static bool handle_short_command(void) {
 
 static void submit_input(void) {
     if (input_len == 0) {
-        /* 空行回车 */
         replay_buf[0] = '\r';
         replay_len = 1;
         start_replay();
@@ -463,7 +493,6 @@ static void submit_input(void) {
     }
     if (handle_short_command()) return;
 
-    /* 普通输入回放 */
     int n = 0;
     for (int i = 0; i < input_len && n < (int)sizeof(replay_buf) - 1; i++)
         replay_buf[n++] = input_buf[i];
@@ -481,7 +510,7 @@ static void submit_input(void) {
 static int last_wheel = -1;
 #endif
 
-enum plugin_status trs80_run(const void* parameter) {
+enum plugin_status trs80_run(const void *parameter) {
     (void)parameter;
     log_init();
 
@@ -507,28 +536,34 @@ enum plugin_status trs80_run(const void* parameter) {
 
     kb_index = 0; shift_pending = false;
     input_len = 0; input_buf[0] = 0;
-    replay_len = 0; replay_pos = -1; replay_phase = 0; replay_frames = 0;
+    replay_len = 0; replay_pos = -1; replay_phase = 0;
+    replay_frames = 0; replay_shift = false;
     lp_timer = 0;
-    for (int i = 0; i < 8; i++) kb_row[i] = 0xFF;
+    clear_kb_rows();
 
     uint32_t held = 0;
+    static bool sel_was = false;
     int btn;
 
     while (1) {
-        /* CPU */
         for (int i = 0; i < 5000; i++) z80_step(&cpu);
 
         step_replay();
+
+        /* 回放结束后恢复默认键盘状态（SHIFT 保持） */
+        if (replay_pos < 0) {
+            clear_kb_rows();
+            if (shift_pending) kb_row[7] &= ~(1 << 0);
+        }
+
         if (lp_timer > 0) lp_timer--;
 
         /* SELECT 边沿触发 */
-        static bool sel_was = false;
         bool sel_now = (held & BUTTON_SELECT) != 0;
         if (sel_now && !sel_was && replay_pos < 0) {
             if (is_shift_key(kb_index)) {
                 shift_pending = !shift_pending;
-            }
-            else if (input_len < (int)sizeof(input_buf) - 1) {
+            } else if (input_len < (int)sizeof(input_buf) - 1) {
                 char ch = key_map[kb_index].label[0];
                 if (shift_pending && ch >= '0' && ch <= '9') {
                     static const char shifted[] = "_!\"#$%&'()";
@@ -550,8 +585,7 @@ enum plugin_status trs80_run(const void* parameter) {
             if (delta >= 2) {
                 kb_index += delta / 2;
                 while (kb_index >= KEY_COUNT) kb_index -= KEY_COUNT;
-            }
-            else if (delta <= -2) {
+            } else if (delta <= -2) {
                 kb_index += delta / 2;
                 while (kb_index < 0) kb_index += KEY_COUNT;
             }
@@ -583,7 +617,8 @@ enum plugin_status trs80_run(const void* parameter) {
                 input_len = 0; input_buf[0] = 0;
                 shift_pending = false;
                 replay_len = 0; replay_pos = -1;
-                for (int i = 0; i < 8; i++) kb_row[i] = 0xFF;
+                replay_shift = false;
+                clear_kb_rows();
                 continue;
             }
             if (btn == BUTTON_LEFT) {

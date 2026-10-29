@@ -18,9 +18,11 @@
    so GETLN deletes the char, the space erases the glyph on the
    text page, and the second backspace removes the space from
    the GETLN buffer again.
+
+   Apple II+ has no lowercase, so there is no lowercase page.
    ============================================================ */
 
-   /* ---------------- logging ---------------- */
+/* ---------------- logging ---------------- */
 #define APPLE2_LOG_PATH "/lemon_computer_emu/log/apple2.log"
 #define APPLE2_LOG_CAP  (64 * 1024)
 
@@ -29,20 +31,19 @@ static logger_t apple2_log;
 
 static void log_init(void) {
     size_t avail = 0;
-    char* buf = rb->plugin_get_buffer(&avail);
+    char *buf = rb->plugin_get_buffer(&avail);
     size_t cap;
 
     if (!buf || avail < 4096) {
         buf = apple2_log_fallback;
         cap = sizeof(apple2_log_fallback);
-    }
-    else {
+    } else {
         cap = (avail < APPLE2_LOG_CAP) ? avail : APPLE2_LOG_CAP;
     }
     logger_init(&apple2_log, buf, cap, APPLE2_LOG_PATH);
 }
 
-static void apple2_log_msg(const char* fmt, ...) {
+static void apple2_log_msg(const char *fmt, ...) {
     char tmp[256];
     va_list args;
 
@@ -62,7 +63,7 @@ static void apple2_log_msg(const char* fmt, ...) {
    Load ROM
    ============================================================ */
 static bool load_rom(void) {
-    const char* path = "/apple2/roms/apple2.rom";
+    const char *path = "/apple2/roms/apple2.rom";
     int fd = rb->open(path, O_RDONLY);
     if (fd < 0) return false;
     off_t size = rb->ffilesize(fd);
@@ -90,17 +91,17 @@ static bool load_rom(void) {
 #define KEY_ROWS  3
 #define KEY_COLS  20
 #define KEY_TOTAL (KEY_ROWS * KEY_COLS)
-#define KB_PAGES  4
+#define KB_PAGES  3
 
 #define COLOR_BG      0x0000
 #define COLOR_TEXT    0xFFFF
 #define COLOR_STATUS  0xFFFF
 #define COLOR_KEY_SEL 0xFFFF
 
-   /* ============================================================
-      Font
-      ============================================================ */
-static struct font* fixed_font = NULL;
+/* ============================================================
+   Font
+   ============================================================ */
+static struct font *fixed_font = NULL;
 
 static bool init_font(void) {
     fixed_font = rb->font_load("/.rockbox/fonts/10-Fixed.fnt");
@@ -120,12 +121,7 @@ static int kb_index = 0;
 
 static const char kb_page_upper[KEY_ROWS][KEY_COLS + 1] = {
     "ABCDEFGHIJKLMNOPQRST",
-    "UVWXYZ 123456789.,;:",
-    "!?\"'()[]{}+-*/<>_@#P"
-};
-static const char kb_page_lower[KEY_ROWS][KEY_COLS + 1] = {
-    "abcdefghijklmnopqrst",
-    "uvwxyz 123456789.,;:",
+    "UVWXYZ 0123456789.,:",
     "!?\"'()[]{}+-*/<>_@#P"
 };
 static const char kb_page_digit[KEY_ROWS][KEY_COLS + 1] = {
@@ -140,15 +136,13 @@ static const char kb_page_sym[KEY_ROWS][KEY_COLS + 1] = {
 };
 
 static const char (*kb_layouts[KB_PAGES])[KEY_COLS + 1] = {
-    kb_page_upper, kb_page_lower, kb_page_digit, kb_page_sym
+    kb_page_upper, kb_page_digit, kb_page_sym
 };
 
 static char kb_get(int r, int c) { return kb_layouts[kb_page][r][c]; }
 static int kb_cell_page(int r, int c) { return (r == 2 && c == 19); }
-static int kb_cell_space(int r, int c) {
-    return ((kb_page == 0 || kb_page == 1)
-        && r == 1 && c == 6);
-}
+static int kb_cell_space(int r, int c){ return (kb_page == 0
+                                              && r == 1 && c == 6); }
 
 /* ============================================================
    Key FIFO
@@ -159,10 +153,8 @@ static volatile int key_q_head = 0;
 static volatile int key_q_tail = 0;
 
 static inline int key_q_empty(void) { return key_q_head == key_q_tail; }
-static inline int key_q_full(void) {
-    return ((key_q_tail + 1) % KEY_QUEUE_SIZE)
-        == key_q_head;
-}
+static inline int key_q_full(void)  { return ((key_q_tail + 1) % KEY_QUEUE_SIZE)
+                                          == key_q_head; }
 static inline void key_q_push(uint8_t c) {
     if (!key_q_full()) {
         key_queue[key_q_tail] = c;
@@ -197,7 +189,7 @@ static bool save_state(void) {
     rb->mkdir("/apple2");
     rb->mkdir("/apple2/state");
     int fd = rb->open("/apple2/state/apple2_ram.bin",
-        O_WRONLY | O_CREAT | O_TRUNC, 0666);
+                      O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
     rb->write(fd, a2_mem, 65536);
     uint8_t st[8];
@@ -230,7 +222,7 @@ static bool restore_state(void) {
 /* ============================================================
    Program load
    ============================================================ */
-static bool load_program_from_path(const char* path) {
+static bool load_program_from_path(const char *path) {
     int fd = rb->open(path, O_RDONLY);
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
@@ -251,57 +243,57 @@ static bool load_program_from_path(const char* path) {
 }
 
 /* ============================================================
-   CC lookup - full table
+   CC lookup
    ============================================================ */
-static void cc_lookup(const char* abbr) {
-    struct cc_entry { const char* abbr; const char* band; const char* name; };
+static void cc_lookup(const char *abbr) {
+    struct cc_entry { const char *abbr; const char *band; const char *name; };
     static const struct cc_entry table[] = {
-        { "KSM","Poppin'Party","Toyama Kasumi" },
-        { "ARS","Poppin'Party","Ichigaya Arisa" },
-        { "SAYA","Poppin'Party","Yamabuki Saaya" },
-        { "OTAE","Poppin'Party","Hanazono Tae" },
-        { "RIMI","Poppin'Party","Ushigome Rimi" },
-        { "KKR","Hello, Happy World!","Tsurumaki Kokoro" },
-        { "MSK","Hello, Happy World!","Okusawa Misaki" },
-        { "HGM","Hello, Happy World!","Kitazawa Hagumi" },
-        { "KN","Hello, Happy World!","Matsubara Kanon" },
-        { "KOR","Hello, Happy World!","Seta Kaoru" },
-        { "MOCA","Afterglow","Aoba Moca" },
-        { "HMR","Afterglow","Uehara Himari" },
-        { "TSUGU","Afterglow","Hazawa Tsugumi" },
-        { "RAN","Afterglow","Mitake Ran" },
-        { "SOYA","Afterglow","Udagawa Tomoe" },
-        { "CST","Pastel*Palettes","Shirasagi Chisato" },
-        { "HINA","Pastel*Palettes","Hikawa Hina" },
-        { "EVE","Pastel*Palettes","Wakamiya Eve" },
-        { "MAYA","Pastel*Palettes","Yamato Maya" },
-        { "AYA","Pastel*Palettes","Maruyama Aya" },
-        { "YKN","Roselia","Minato Yukina" },
-        { "LISA","Roselia","Imai Lisa" },
-        { "RINRIN","Roselia","Shirokane Rinko" },
-        { "AKO","Roselia","Udagawa Ako" },
-        { "SAYO","Roselia","Hikawa Sayo" },
-        { "MSR","Morfonica","Kurata Mashiro" },
-        { "TOKO","Morfonica","Kirigaya Touko" },
-        { "NNM","Morfonica","Hiromachi Nanami" },
-        { "TKS","Morfonica","Futaba Tsukushi" },
-        { "RUI","Morfonica","Yashio Rui" },
-        { "CHUCHU","RAISE A SUILEN","Tamade Chiyu" },
-        { "PAREO","RAISE A SUILEN","Nyubara Reona" },
-        { "MASKING","RAISE A SUILEN","Satou Masuki" },
-        { "LAYER","RAISE A SUILEN","Wakana Rei" },
-        { "LOCK","RAISE A SUILEN","Asahi Rokka" },
-        { "ANON","MyGO!!!!!","Chihaya Anon" },
-        { "TOMO","MyGO!!!!!","Takamatsu Tomori" },
-        { "TAKI","MyGO!!!!!","Shiina Taki" },
-        { "SOYO","MyGO!!!!!","Nagasaki Soyo" },
-        { "RANA","MyGO!!!!!","Kaname Raana" },
+        {"KSM","Poppin'Party","Toyama Kasumi"},
+        {"ARS","Poppin'Party","Ichigaya Arisa"},
+        {"SAYA","Poppin'Party","Yamabuki Saaya"},
+        {"OTAE","Poppin'Party","Hanazono Tae"},
+        {"RIMI","Poppin'Party","Ushigome Rimi"},
+        {"KKR","Hello, Happy World!","Tsurumaki Kokoro"},
+        {"MSK","Hello, Happy World!","Okusawa Misaki"},
+        {"HGM","Hello, Happy World!","Kitazawa Hagumi"},
+        {"KN","Hello, Happy World!","Matsubara Kanon"},
+        {"KOR","Hello, Happy World!","Seta Kaoru"},
+        {"MOCA","Afterglow","Aoba Moca"},
+        {"HMR","Afterglow","Uehara Himari"},
+        {"TSUGU","Afterglow","Hazawa Tsugumi"},
+        {"RAN","Afterglow","Mitake Ran"},
+        {"SOYA","Afterglow","Udagawa Tomoe"},
+        {"CST","Pastel*Palettes","Shirasagi Chisato"},
+        {"HINA","Pastel*Palettes","Hikawa Hina"},
+        {"EVE","Pastel*Palettes","Wakamiya Eve"},
+        {"MAYA","Pastel*Palettes","Yamato Maya"},
+        {"AYA","Pastel*Palettes","Maruyama Aya"},
+        {"YKN","Roselia","Minato Yukina"},
+        {"LISA","Roselia","Imai Lisa"},
+        {"RINRIN","Roselia","Shirokane Rinko"},
+        {"AKO","Roselia","Udagawa Ako"},
+        {"SAYO","Roselia","Hikawa Sayo"},
+        {"MSR","Morfonica","Kurata Mashiro"},
+        {"TOKO","Morfonica","Kirigaya Touko"},
+        {"NNM","Morfonica","Hiromachi Nanami"},
+        {"TKS","Morfonica","Futaba Tsukushi"},
+        {"RUI","Morfonica","Yashio Rui"},
+        {"CHUCHU","RAISE A SUILEN","Tamade Chiyu"},
+        {"PAREO","RAISE A SUILEN","Nyubara Reona"},
+        {"MASKING","RAISE A SUILEN","Satou Masuki"},
+        {"LAYER","RAISE A SUILEN","Wakana Rei"},
+        {"LOCK","RAISE A SUILEN","Asahi Rokka"},
+        {"ANON","MyGO!!!!!","Chihaya Anon"},
+        {"TOMO","MyGO!!!!!","Takamatsu Tomori"},
+        {"TAKI","MyGO!!!!!","Shiina Taki"},
+        {"SOYO","MyGO!!!!!","Nagasaki Soyo"},
+        {"RANA","MyGO!!!!!","Kaname Raana"},
     };
-    for (unsigned i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+    for (unsigned i = 0; i < sizeof(table)/sizeof(table[0]); i++) {
         if (rb->strcasecmp(abbr, table[i].abbr) == 0) {
             char out[128];
             rb->snprintf(out, sizeof(out), "%s - %s", table[i].band,
-                table[i].name);
+                         table[i].name);
             rb->splash(HZ * 3, out);
             return;
         }
@@ -349,7 +341,7 @@ static bool handle_play(void) {
         shadow_buf[1] == ' ') {
         char path[128];
         rb->snprintf(path, sizeof(path), "/apple2/programs/%s", shadow_buf +
-            2);
+                     2);
         erase_typed();
         if (load_program_from_path(path)) rb->splash(HZ, "LOADING");
         else                              rb->splash(HZ, "NO FILE");
@@ -358,26 +350,25 @@ static bool handle_play(void) {
     if (shadow_len == 2 && shadow_buf[0] == 'L' && shadow_buf[1]
         == 'P') {
         erase_typed();
-        DIR* dir = rb->opendir("/apple2/programs");
+        DIR *dir = rb->opendir("/apple2/programs");
         if (dir) {
             for (int i = 0x400; i < 0x800; i++) a2_mem[i] = 0xA0;
             int row = 0;
-            struct dirent* entry;
+            struct dirent *entry;
             while ((entry = rb->readdir(dir)) != NULL && row < 23)
             {
                 if (entry->d_name[0] == '.') continue;
                 int lb = ((row & 0x07) << 7) | (((row >> 3)
-                    & 3) * 0x28);
+                         & 3) * 0x28);
                 int len = rb->strlen(entry->d_name);
                 if (len > 40) len = 40;
                 for (int i = 0; i < len; i++)
                     a2_mem[0x400 + lb + i] = (uint8_t)entry->d_name[i] |
-                    0x80;
+                                             0x80;
                 row++;
             }
             rb->closedir(dir);
-        }
-        else {
+        } else {
             rb->splash(HZ * 2, "NO PROG DIR");
         }
         return false;
@@ -444,11 +435,9 @@ static void draw_keyboard(void) {
             int sel = (r * KEY_COLS + c == kb_index);
             if (kb_cell_page(r, c)) {
                 buf2[0] = 'P'; buf2[1] = 'G'; buf2[2] = '\0';
-            }
-            else if (kb_cell_space(r, c)) {
+            } else if (kb_cell_space(r, c)) {
                 buf2[0] = 'S'; buf2[1] = 'P'; buf2[2] = '\0';
-            }
-            else {
+            } else {
                 char ch = kb_get(r, c);
                 buf2[0] = ch ? ch : ' ';
                 buf2[1] = '\0';
@@ -457,8 +446,7 @@ static void draw_keyboard(void) {
             if (sel) {
                 rb->lcd_set_foreground(COLOR_BG);
                 rb->lcd_set_background(COLOR_KEY_SEL);
-            }
-            else {
+            } else {
                 rb->lcd_set_foreground(COLOR_TEXT);
                 rb->lcd_set_background(COLOR_BG);
             }
@@ -475,7 +463,7 @@ static void draw_ui(void) {
     draw_status();
     a2_render_video();
     rb->lcd_bitmap_part(a2_fb, 0, 0, VIDEO_W, 0, VIDEO_TOP, VIDEO_W,
-        VIDEO_H);
+                        VIDEO_H);
     rb->lcd_update_rect(0, VIDEO_TOP, VIDEO_W, VIDEO_H);
     draw_keyboard();
     rb->lcd_update();
@@ -488,7 +476,7 @@ static void draw_ui(void) {
 static int last_wheel = -1;
 #endif
 
-enum plugin_status apple2_run(const void* parameter) {
+enum plugin_status apple2_run(const void *parameter) {
     (void)parameter;
     log_init();
 
@@ -538,8 +526,7 @@ enum plugin_status apple2_run(const void* parameter) {
             if (delta >= 2) {
                 kb_index += delta / 2;
                 if (kb_index >= KEY_TOTAL) kb_index -= KEY_TOTAL;
-            }
-            else if (delta <= -2) {
+            } else if (delta <= -2) {
                 kb_index += delta / 2;
                 if (kb_index < 0) kb_index += KEY_TOTAL;
             }
@@ -567,19 +554,16 @@ enum plugin_status apple2_run(const void* parameter) {
 #endif
                     return PLUGIN_OK;
                 }
-            }
-            else if (btn == BUTTON_SELECT) {
+            } else if (btn == BUTTON_SELECT) {
                 int r = kb_index / KEY_COLS;
                 int c = kb_index % KEY_COLS;
                 if (kb_cell_page(r, c)) {
                     kb_page = (kb_page + 1) % KB_PAGES;
-                }
-                else if (kb_cell_space(r, c)) {
+                } else if (kb_cell_space(r, c)) {
                     key_q_push(' ');
                     if (shadow_len < (int)sizeof(shadow_buf) - 1)
                         shadow_buf[shadow_len++] = ' ';
-                }
-                else {
+                } else {
                     char ch = kb_get(r, c);
                     if (ch) {
                         key_q_push(ch);
@@ -587,24 +571,20 @@ enum plugin_status apple2_run(const void* parameter) {
                             shadow_buf[shadow_len++] = ch;
                     }
                 }
-            }
-            else if (btn == BUTTON_LEFT) {
+            } else if (btn == BUTTON_LEFT) {
                 key_q_push(0x08);
                 key_q_push(0x20);
                 key_q_push(0x08);
                 if (shadow_len > 0) shadow_len--;
-            }
-            else if (btn == BUTTON_RIGHT) {
+            } else if (btn == BUTTON_RIGHT) {
                 key_q_clear();
                 playback_pos = playback_len = 0;
                 shadow_len = 0;
                 a2_reset();
-            }
-            else if (btn == BUTTON_SCROLL_FWD) {
+            } else if (btn == BUTTON_SCROLL_FWD) {
                 kb_index++;
                 if (kb_index >= KEY_TOTAL) kb_index = 0;
-            }
-            else if (btn == BUTTON_SCROLL_BACK) {
+            } else if (kb_index >= 0 && btn == BUTTON_SCROLL_BACK) {
                 kb_index--;
                 if (kb_index < 0) kb_index = KEY_TOTAL - 1;
             }

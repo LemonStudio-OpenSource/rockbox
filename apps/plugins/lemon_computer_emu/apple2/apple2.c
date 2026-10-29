@@ -22,8 +22,9 @@
    Apple II+ has no lowercase, so there is no lowercase page.
    ============================================================ */
 
-/* ---------------- logging ---------------- */
-#define APPLE2_LOG_PATH "/lemon_computer_emu/log/apple2.log"
+
+   /* ---------------- logging ---------------- */
+#define APPLE2_LOG_PATH "/lemon_computer_emu/logs/apple/apple2/apple2.log"
 #define APPLE2_LOG_CAP  (64 * 1024)
 
 static char apple2_log_fallback[4096];
@@ -63,7 +64,7 @@ static void apple2_log_msg(const char *fmt, ...) {
    Load ROM
    ============================================================ */
 static bool load_rom(void) {
-    const char *path = "/apple2/roms/apple2.rom";
+    const char* path = "/lemon_computer_emu/roms/apple/apple2/apple2.rom";
     int fd = rb->open(path, O_RDONLY);
     if (fd < 0) return false;
     off_t size = rb->ffilesize(fd);
@@ -186,10 +187,12 @@ static int  playback_pos = 0;
    Save / Restore
    ============================================================ */
 static bool save_state(void) {
-    rb->mkdir("/apple2");
-    rb->mkdir("/apple2/state");
-    int fd = rb->open("/apple2/state/apple2_ram.bin",
-                      O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    rb->mkdir("/lemon_computer_emu");
+    rb->mkdir("/lemon_computer_emu/states");
+    rb->mkdir("/lemon_computer_emu/states/apple")
+    rb->mkdir("/lemon_computer_emu/states/apple/apple2")
+    int fd = rb->open("/lemon_computer_emu/states/apple/apple2/apple2_ram.bin",
+        O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
     rb->write(fd, a2_mem, 65536);
     uint8_t st[8];
@@ -206,7 +209,7 @@ static bool save_state(void) {
     return true;
 }
 static bool restore_state(void) {
-    int fd = rb->open("/apple2/state/apple2_ram.bin", O_RDONLY);
+    int fd = rb->open("/lemon_computer_emu/states/apple/apple2/apple2_ram.bin", O_RDONLY);
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
     if (size < 65536 + 8) { rb->close(fd); return false; }
@@ -331,7 +334,7 @@ static bool handle_play(void) {
     }
     if (shadow_len == 1 && shadow_buf[0] == 'P') {
         erase_typed();
-        if (load_program_from_path("/apple2/programs/apple2_program.txt"))
+        if (load_program_from_path("/lemon_computer_emu/programs/apple/apple2/apple2_program.txt"))
             rb->splash(HZ, "LOADING");
         else
             rb->splash(HZ, "NO FILE");
@@ -340,8 +343,8 @@ static bool handle_play(void) {
     if (shadow_len > 2 && shadow_buf[0] == 'P' &&
         shadow_buf[1] == ' ') {
         char path[128];
-        rb->snprintf(path, sizeof(path), "/apple2/programs/%s", shadow_buf +
-                     2);
+        rb->snprintf(path, sizeof(path), "/lemon_computer_emu/programs/apple/apple2/%s", shadow_buf +
+            2);
         erase_typed();
         if (load_program_from_path(path)) rb->splash(HZ, "LOADING");
         else                              rb->splash(HZ, "NO FILE");
@@ -350,7 +353,7 @@ static bool handle_play(void) {
     if (shadow_len == 2 && shadow_buf[0] == 'L' && shadow_buf[1]
         == 'P') {
         erase_typed();
-        DIR *dir = rb->opendir("/apple2/programs");
+        DIR* dir = rb->opendir("/lemon_computer_emu/programs/apple/apple2");
         if (dir) {
             for (int i = 0x400; i < 0x800; i++) a2_mem[i] = 0xA0;
             int row = 0;

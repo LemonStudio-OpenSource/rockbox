@@ -6,7 +6,7 @@
 /* ============================================================
    Logging
    ============================================================ */
-#define APPLE1_LOG_PATH "/lemon_computer_emu/log/apple1.log"
+#define APPLE1_LOG_PATH "/lemon_computer_emu/logs/apple/apple1/apple1.log"
 #define APPLE1_LOG_CAP  (128 * 1024)
 
 static char apple1_log_fallback[4096];
@@ -341,7 +341,7 @@ static void apple1_write(mos6502_t* c, uint16_t addr, uint8_t val) {
    Load ROM
    ============================================================ */
 static bool load_rom(void) {
-    int fd = rb->open("/apple_i/roms/AM27C256@DIP28.BIN", O_RDONLY);
+    int fd = rb->open("/lemon_computer_emu/roms/apple/apple1/AM27C256@DIP28.BIN", O_RDONLY);
     if (fd < 0) { LOG("AM27C256@DIP28.BIN not found"); return false; }
     off_t pos = rb->lseek(fd, 0x0000, SEEK_SET);
     if (pos < 0) { rb->close(fd); return false; }
@@ -352,7 +352,7 @@ static bool load_rom(void) {
 }
 
 static bool load_monitor(void) {
-    int fd = rb->open("/apple_i/roms/apple1monitor.bin", O_RDONLY);
+    int fd = rb->open("/lemon_computer_emu/roms/apple/apple1/apple1monitor.bin", O_RDONLY);
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
     if (size > 0x100) size = 0x100;
@@ -362,7 +362,7 @@ static bool load_monitor(void) {
 }
 
 static bool load_apple_basic_v2(void) {
-    int fd = rb->open("/apple_i/roms/AM27C256@DIP28.BIN", O_RDONLY);
+    int fd = rb->open("/lemon_computer_emu/roms/apple/apple1/AM27C256@DIP28.BIN", O_RDONLY);
     if (fd < 0) { LOG("AM27C256@DIP28.BIN not found"); return false; }
     off_t pos = rb->lseek(fd, 0x2000, SEEK_SET);
     if (pos < 0) { rb->close(fd); return false; }
@@ -388,11 +388,11 @@ static bool name_has_6502(const char* name) {
 
 static bool load_ms_basic(void) {
     static const char* paths[] = {
-        "/apple_i/roms/cz6502.bin",
-        "/apple_i/roms/CZ6502.BIN",
-        "/apple_i/roms/CZ6502.bin",
-        "/apple_i/roms/cz6502.BIN",
-        "/apple_i/roms/Cz6502.bin",
+        "/lemon_computer_emu/roms/apple/apple1/cz6502.bin",
+        "/lemon_computer_emu/roms/apple/apple1/CZ6502.BIN",
+        "/lemon_computer_emu/roms/apple/apple1/CZ6502.bin",
+        "/lemon_computer_emu/roms/apple/apple1/cz6502.BIN",
+        "/lemon_computer_emu/roms/apple/apple1/Cz6502.bin",
     };
     int fd = -1;
     for (int i = 0; i < (int)(sizeof(paths) / sizeof(paths[0])); i++) {
@@ -404,14 +404,14 @@ static bool load_ms_basic(void) {
     }
     if (fd < 0) {
         LOG("cz6502.bin not found, scanning directory");
-        DIR* dir = rb->opendir("/apple_i/roms");
+        DIR* dir = rb->opendir("/lemon_computer_emu/roms/apple/apple1/");
         if (dir) {
             struct dirent* entry;
             while ((entry = rb->readdir(dir)) != NULL) {
                 if (entry->d_name[0] == '.') continue;
                 if (!name_has_6502(entry->d_name)) continue;
                 char fullpath[256];
-                rb->snprintf(fullpath, sizeof(fullpath), "/apple_i/roms/%s", entry->d_name);
+                rb->snprintf(fullpath, sizeof(fullpath), "/lemon_computer_emu/roms/apple/apple1/%s", entry->d_name);
                 fd = rb->open(fullpath, O_RDONLY);
                 if (fd >= 0) {
                     LOG("MS-BASIC found via scan: %s", fullpath);
@@ -435,7 +435,7 @@ static bool load_ms_basic(void) {
    Save / Restore / Program Load
    ============================================================ */
 static bool save_state(void) {
-    int fd = rb->open("/apple_i/rams/apple_i_ram_data.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    int fd = rb->open("/lemon_computer_emu/states/apple/apple1/apple_i_ram_data.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
     rb->write(fd, mem, 65536);
     uint8_t state[8];
@@ -453,7 +453,7 @@ static bool save_state(void) {
 }
 
 static bool restore_state(void) {
-    int fd = rb->open("/apple_i/rams/apple_i_ram_data.bin", O_RDONLY);
+    int fd = rb->open("/lemon_computer_emu/states/apple/apple1/apple_i_ram_data.bin", O_RDONLY);
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
     if (size < 65536 + 8) { rb->close(fd); return false; }
@@ -499,7 +499,7 @@ static bool load_program_from_path(const char* path) {
 }
 
 static bool load_program(void) {
-    return load_program_from_path("/apple_i/programs/apple_i_program.txt");
+    return load_program_from_path("/lemon_computer_emu/programs/apple/apple1/apple1.txt");
 }
 
 static void terminal_print(const char* str) {
@@ -631,7 +631,7 @@ enum plugin_status apple1_run(const void* parameter) {
                     while (space_pos < input_len && input_buf[space_pos] == ' ') space_pos++;
                     if (space_pos < input_len) {
                         char path[128];
-                        rb->snprintf(path, sizeof(path), "/apple_i/programs/%s", input_buf + space_pos);
+                        rb->snprintf(path, sizeof(path), "/lemon_computer_emu/programs/apple/apple1/%s", input_buf + space_pos);
                         load_program_from_path(path);
                     }
                     else {
@@ -692,7 +692,7 @@ enum plugin_status apple1_run(const void* parameter) {
                 }
                 else if (input_len == 2 && input_buf[0] == 'L' && input_buf[1] == 'P') {
                     input_len = 0;
-                    DIR* dir = rb->opendir("/apple_i/programs");
+                    DIR* dir = rb->opendir("/lemon_computer_emu/programs/apple/apple1/");
                     if (dir) {
                         struct dirent* entry;
                         terminal_print("\r");

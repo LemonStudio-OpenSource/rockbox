@@ -11,6 +11,7 @@ struct emu_entry {
 static const struct emu_entry emu_table[] = {
     { "APPLE1", apple1_run },
     { "APPLE2", apple2_run },
+    { "TRS-80", trs80_run },
 };
 
 #define EMU_COUNT ((int)(sizeof(emu_table) / sizeof(emu_table[0])))

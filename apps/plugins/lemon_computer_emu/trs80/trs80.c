@@ -69,18 +69,22 @@ static uint8_t kb_row[8];
 
 static uint8_t trs80_read(void* ctx, uint16_t addr) {
     (void)ctx;
-    /* 键盘映射：包括 0x3800 本身 */
-    if (addr >= 0x3800 && addr <= 0x3880) {
-        if (addr == 0x3800) return 0xFF; /* 安全返回“无键按下” */
-        if (addr & 0x01) return kb_row[0];
-        if (addr & 0x02) return kb_row[1];
-        if (addr & 0x04) return kb_row[2];
-        if (addr & 0x08) return kb_row[3];
-        if (addr & 0x10) return kb_row[4];
-        if (addr & 0x20) return kb_row[5];
-        if (addr & 0x40) return kb_row[6];
-        if (addr & 0x80) return kb_row[7];
+
+    /* 键盘区域 0x3800-0x38FF */
+    if ((addr & 0xFF00) == 0x3800) {
+        uint8_t result = 0;
+        /* 地址的 A0-A7 位作为行选择掩码，按位或所有选中行 */
+        if (addr & 0x01) result |= kb_row[0]; /* 0x3801: @ A B C D E F G */
+        if (addr & 0x02) result |= kb_row[1]; /* 0x3802: H I J K L M N O */
+        if (addr & 0x04) result |= kb_row[2]; /* 0x3804: P Q R S T U V W */
+        if (addr & 0x08) result |= kb_row[3]; /* 0x3808: X Y Z */
+        if (addr & 0x10) result |= kb_row[4]; /* 0x3810: 0 1 2 3 4 5 6 7 */
+        if (addr & 0x20) result |= kb_row[5]; /* 0x3820: 8 9 : ; , - . / */
+        if (addr & 0x40) result |= kb_row[6]; /* 0x3840: ENTER CLEAR BREAK 方向键 SPACE */
+        if (addr & 0x80) result |= kb_row[7]; /* 0x3880: SHIFT */
+        return result;
     }
+
     return mem[addr];
 }
 

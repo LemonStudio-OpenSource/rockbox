@@ -69,8 +69,9 @@ static uint8_t kb_row[8];
 
 static uint8_t trs80_read(void* ctx, uint16_t addr) {
     (void)ctx;
-    /* 键盘映射：读地址本身决定返回哪一行 */
-    if (addr >= 0x3801 && addr <= 0x3880) {
+    /* 键盘映射：包括 0x3800 本身 */
+    if (addr >= 0x3800 && addr <= 0x3880) {
+        if (addr == 0x3800) return 0xFF; /* 安全返回“无键按下” */
         if (addr & 0x01) return kb_row[0];
         if (addr & 0x02) return kb_row[1];
         if (addr & 0x04) return kb_row[2];
@@ -87,17 +88,8 @@ static void trs80_write(void* ctx, uint16_t addr, uint8_t val) {
     (void)ctx;
 
     /* 键盘区：写入忽略 */
-    if (addr >= 0x3800 && addr <= 0x3880) {
-        if (addr & 0x01) return kb_row[0];
-        if (addr & 0x02) return kb_row[1];
-        if (addr & 0x04) return kb_row[2];
-        if (addr & 0x08) return kb_row[3];
-        if (addr & 0x10) return kb_row[4];
-        if (addr & 0x20) return kb_row[5];
-        if (addr & 0x40) return kb_row[6];
-        if (addr & 0x80) return kb_row[7];
-        return kb_row[0];  /* 0x3800 本身，返回第0行 */
-    }
+    if (addr >= 0x3800 && addr <= 0x38FF)
+        return;
 
     /* 视频RAM 0x3C00–0x3FFF：必须允许写入 */
     if (addr >= 0x3C00 && addr <= 0x3FFF) {

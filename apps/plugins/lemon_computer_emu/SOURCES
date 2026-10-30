@@ -4,5 +4,8 @@ apple2/apple2.c
 apple2/a2core.c
 apple2/a2video.c
 apple2/a2font.c
-core/zilogz80.c
 trs80/trs80.c
+trs80/t80core.c
+trs80/t80video.c
+trs80/t80font.c
+core/zilogz80.c

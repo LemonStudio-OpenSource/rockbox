@@ -4,15 +4,15 @@
 #include "../core/logger.h"
 #include "../core/zilogz80.h"
 
-#define TRS80_LOG_PATH  "/lemon_computer_emu/log/trs80.log"
+#define TRS80_LOG_PATH  "/lemon_computer_emu/logs/tandy/trs80/trs80.log"
 #define TRS80_LOG_CAP   (64 * 1024)
-#define ROM_A_PATH      "/lemon_computer_emu/roms/trs80/rom_a_L2_v13.bin"
-#define ROM_B_PATH      "/lemon_computer_emu/roms/trs80/rom_b_L2_v13.bin"
+#define ROM_A_PATH      "/lemon_computer_emu/roms/tandy/trs80/rom_a_L2_v13.bin"
+#define ROM_B_PATH      "/lemon_computer_emu/roms/tandy/trs80/rom_b_L2_v13.bin"
 #define ROM_A_SIZE      0x2000
 #define ROM_B_SIZE      0x1000
-#define SAVE_PATH       "/lemon_computer_emu/trs80/state.bin"
-#define PROG_DIR        "/lemon_computer_emu/trs80/programs"
-#define PROG_DEFAULT    "/lemon_computer_emu/trs80/programs/trs80_program.txt"
+#define SAVE_PATH       "/lemon_computer_emu/states/tandy/trs80/state.bin"
+#define PROG_DIR        "/lemon_computer_emu/programs/tandy/trs80"
+#define PROG_DEFAULT    "/lemon_computer_emu/programs/tandy/trs80/TRS80_PROGRAM.txt"
 
 #define VIDEO_TOP 12
 #define VIDEO_ROWS 16
@@ -291,7 +291,9 @@ static bool load_program_from_path(const char* path) {
    ============================================================ */
 static bool save_state(void) {
     rb->mkdir("/lemon_computer_emu");
-    rb->mkdir("/lemon_computer_emu/trs80");
+    rb->mkdir("/lemon_computer_emu/states");
+    rb->mkdir("/lemon_computer_emu/states/tandy");
+    rb->mkdir("/lemon_computer_emu/states/tandy/trs80");
     int fd = rb->open(SAVE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
     rb->write(fd, mem, 65536);

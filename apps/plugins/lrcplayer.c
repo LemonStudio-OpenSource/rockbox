@@ -25,8 +25,14 @@
 
 
 
-#define MAX_LINE_LEN    256
-#define LRC_BUFFER_SIZE 0x3000 /* 12 kiB */
+#define MAX_LINE_LEN    1024
+/* Upper bound for the amount of lyric text we are willing to hold in
+ * memory.  The plugin buffer is 512 KiB on the iPod targets, so 300 KiB
+ * of lyrics still leave plenty of room for the line cache; targets with
+ * a smaller plugin buffer are limited by lrc_buffer_size instead (see
+ * plugin_start).  The old code had a hard 12 KiB cap on top of the
+ * 256 byte line buffer, which silently chopped long lyrics. */
+#define LRC_MAX_LYRICS_SIZE (300 * 1024)
 #if PLUGIN_BUFFER_SIZE >= 0x10000 /* no id3 support for low mem targets */
 /* define this to read lyrics in id3 tag */
 #define LRC_SUPPORT_ID3
@@ -79,6 +85,7 @@ struct preferences {
     bool display_title;
     bool display_time;
     bool backlight_on;
+    bool show_map; /* draw the lyric map strip under the lyrics */
 
     /* file settings */
     char lrc_directory[64];
@@ -91,6 +98,10 @@ struct preferences {
 static struct preferences prefs, old_prefs;
 static unsigned char *lrc_buffer;
 static size_t lrc_buffer_size;
+/* how much of lrc_buffer may be used by lyric text + line structures.
+ * Always <= lrc_buffer_size; everything above it stays free for the
+ * break-position cache (which grows down from lrc_buffer_end). */
+static size_t lrc_text_limit;
 static size_t lrc_buffer_used, lrc_buffer_end;
 enum extention_types {LRC, LRC8, SNC, TXT, NUM_TYPES, ID3_SYLT, ID3_USLT};
 static const char *extentions[NUM_TYPES] = {
@@ -117,9 +128,12 @@ static struct lrc_info {
     bool loaded_lrc;
     bool changed_lrc;
     bool too_many_lines; /* true if nlrcline >= max_lrclines after calc pos */
+    bool truncated; /* true if lyrics did not fit into the buffer */
     bool wipe; /* false if lyrics is unsynched */
 } current;
 static char temp_buf[MAX(MAX_LINE_LEN,MAX_PATH)];
+/* one decoding scratch buffer for every loader (was a 768 byte local) */
+static char utf8line[MAX_LINE_LEN*4];
 static int uifont = -1;
 static int font_ui_height = 1;
 static struct viewport vp_info[NB_SCREENS];
@@ -290,6 +304,7 @@ static void reset_current_data(void)
     current.loaded_lrc = false;
     current.changed_lrc = false;
     current.too_many_lines = false;
+    current.truncated = false;
     lrc_buffer_used = 0;
     lrc_buffer_end = lrc_buffer_size;
 }
@@ -298,20 +313,31 @@ static void reset_current_data(void)
  * return NULL if there is not enough buffer. */
 static char *lrcbufadd(const char*str, bool join)
 {
-    if (join) lrc_buffer_used--;
-    size_t siz = rb->strlen(str)+1;
-    char *pos = &lrc_buffer[lrc_buffer_used];
-    if (lrc_buffer_used + siz > lrc_buffer_end)
+    size_t start = lrc_buffer_used;
+    size_t siz, limit;
+
+    if (join && start) start--; /* overwrite the previous terminator */
+    siz = rb->strlen(str)+1;
+    /* never grow the text side into the cache area or past the cap */
+    limit = lrc_text_limit;
+    if (limit > lrc_buffer_end) limit = lrc_buffer_end;
+    if (start + siz > limit)
+    {
+        current.truncated = true;
         return NULL;
-    rb->strcpy(pos, str);
-    lrc_buffer_used += siz;
-    return pos;
+    }
+    rb->strcpy((char *)&lrc_buffer[start], str);
+    lrc_buffer_used = start + siz;
+    return (char *)&lrc_buffer[start];
 }
 static void *alloc_buf(size_t siz)
 {
     siz = (siz+3) & ~3;
     if (lrc_buffer_used + siz > lrc_buffer_end)
+    {
+        current.truncated = true;
         return NULL;
+    }
     lrc_buffer_end -= siz;
     return &lrc_buffer[lrc_buffer_end];
 }
@@ -893,6 +919,46 @@ static bool parse_lrc_line(char *line, off_t file_offset)
     return true;
 }
 
+/* Drop a trailing incomplete UTF-8 sequence (and anything after the
+ * first invalid byte).  When a very long line is read into a fixed size
+ * buffer it can be cut in the middle of a multi-byte character; the
+ * leftover bytes used to be decoded into a bogus glyph, which is what
+ * showed up as a little box with "ACK"/"NAK" style control pictures in
+ * the lyrics.  Trimming here makes such a cut harmless instead. */
+static void utf8_trim_incomplete(char *str)
+{
+    unsigned char *p = (unsigned char *)str;
+
+    while (*p)
+    {
+        int n, k;
+
+        if (*p < 0x80)
+            n = 1;
+        else if ((*p & 0xE0) == 0xC0)
+            n = 2;
+        else if ((*p & 0xF0) == 0xE0)
+            n = 3;
+        else if ((*p & 0xF8) == 0xF0)
+            n = 4;
+        else
+        {
+            *p = 0;     /* stray continuation byte or invalid lead byte */
+            return;
+        }
+
+        for (k = 1; k < n; k++)
+        {
+            if (p[k] == 0 || (p[k] & 0xC0) != 0x80)
+            {
+                *p = 0; /* incomplete or corrupted sequence: stop here */
+                return;
+            }
+        }
+        p += n;
+    }
+}
+
 /* format:
  * \xa2\xe2hhmmssxx\xa2\xd0
  * line 1
@@ -934,6 +1000,7 @@ static bool parse_snc_line(char *line, off_t file_offset)
 
         /* encode rest of line and add to buffer */
         rb->iso_decode(pos, line, prefs.encoding, rb->strlen(pos)+1);
+        utf8_trim_incomplete(line);
     }
     if (current.ll_head)
     {
@@ -960,7 +1027,6 @@ static bool parse_txt_line(char *line, off_t file_offset)
 
 static void load_lrc_file(void)
 {
-    char utf8line[MAX_LINE_LEN*3];
     int fd;
     int encoding = prefs.encoding;
     bool (*line_parser)(char *line, off_t) = NULL;
@@ -1047,6 +1113,11 @@ static void load_lrc_file(void)
     {
         /* note: parse_snc_line() reads temp_buf for native data. */
         rb->iso_decode(temp_buf, utf8line, encoding, readsize+1);
+        /* a line longer than the buffer was cut mid character: drop the
+           incomplete tail instead of rendering a garbage glyph */
+        utf8_trim_incomplete(utf8line);
+        if (readsize >= MAX_LINE_LEN-1)
+            current.truncated = true; /* line did not fit in temp_buf */
         if (!line_parser(utf8line, file_offset))
             break;
         file_offset += readsize;
@@ -1342,13 +1413,13 @@ static void parse_id3v2(int fd)
         return;
 
     int encoding = 0, chsiz;
-    char *tag, *p, utf8line[MAX_LINE_LEN*3];
+    char *tag, *p;
     unsigned char* (*utf_decode)(const unsigned char *,
                                  unsigned char *, int) = NULL;
-    /* use middle of lrc_buffer to store tag data. */
-    if(framelen >= LRC_BUFFER_SIZE/3)
-        framelen = LRC_BUFFER_SIZE/3-1;
-    tag = lrc_buffer+LRC_BUFFER_SIZE*2/3-framelen-1;
+    /* use the middle of the text area to store the tag data. */
+    if(framelen >= (long)(lrc_text_limit/3))
+        framelen = (long)(lrc_text_limit/3)-1;
+    tag = (char *)lrc_buffer + lrc_text_limit*2/3 - framelen - 1;
     if(global_unsynch && version <= ID3_VER_2_3)
         bytesread = read_unsynched(fd, tag, framelen, &global_ff_found);
     else
@@ -1426,8 +1497,8 @@ static void parse_id3v2(int fd)
     tag = p;
 
     while ( bytesread > 0
-        && lrc_buffer_used+bytesread < LRC_BUFFER_SIZE*2/3
-        && LRC_BUFFER_SIZE*2/3 < lrc_buffer_end)
+        && lrc_buffer_used + (size_t)bytesread < lrc_text_limit*2/3
+        && lrc_text_limit*2/3 < lrc_buffer_end)
     {
         bool is_crlf = false;
         struct lrc_line *lrc_line = alloc_buf(sizeof(struct lrc_line));
@@ -1482,6 +1553,7 @@ static void parse_id3v2(int fd)
         }
         bytesread -= (intptr_t)p - (intptr_t)tag;
         tag = p;
+        utf8_trim_incomplete(utf8line);
         if(!add_lrc_line(lrc_line, utf8line))
             break;
     }
@@ -1783,6 +1855,79 @@ static int display_lrc_line(struct lrc_line *lrc_line, int ypos, int i)
     return ypos;
 }
 
+/*******************************
+ * Lyric map
+ *
+ * A four pixel strip along the bottom of the lyrics viewport: a
+ * timeline of the whole song with one tick per lyric line, the played
+ * part filled in, and a marker on the line that is playing right now.
+ * It shows at a glance whether the lyrics cover the whole song (or
+ * only a part of it) and how far the song has progressed.
+ *******************************/
+#define LRC_MAP_HEIGHT 4
+
+/* map a time (msec) onto an x position of the map; the division is done
+ * first so that a long song can never overflow the multiplication */
+static int lyric_map_x(long t, int width)
+{
+    long ms_per_pixel;
+
+    if (current.length <= 0 || width <= 1)
+        return 0;
+    ms_per_pixel = current.length / width + 1;
+    t /= ms_per_pixel;
+    if (t < 0)
+        t = 0;
+    if (t > width-1)
+        t = width-1;
+    return (int)t;
+}
+
+static void draw_lyric_map(struct lrc_line *lrc_center, int i)
+{
+    struct screen *display = rb->screens[i];
+    struct lrc_line *lrc_line;
+    int width, y0, x, progress, last_x = -1;
+
+    if (!prefs.show_map || current.length <= 0 || current.nlrcline <= 0)
+        return;
+
+    width = vp_lyrics[i].width;
+    if (width <= 1 || vp_lyrics[i].height < LRC_MAP_HEIGHT + font_ui_height)
+        return;
+
+    y0 = vp_lyrics[i].height - LRC_MAP_HEIGHT;
+
+    /* base line of the timeline */
+    set_to_inactive(display);
+    display->hline(0, width-1, y0 + 1);
+
+    /* one tick per lyric line, in song order (several may share a pixel) */
+    for (lrc_line = current.ll_head; lrc_line; lrc_line = lrc_line->next)
+    {
+        x = lyric_map_x(get_time_start(lrc_line), width);
+        if (x == last_x)
+            continue;
+        last_x = x;
+        display->vline(x, y0+1, y0+LRC_MAP_HEIGHT-1);
+    }
+
+    /* played part of the song */
+    progress = lyric_map_x(current.elapsed, width);
+    set_to_active(display);
+    if (progress > 0)
+        display->fillrect(0, y0+2, progress, LRC_MAP_HEIGHT-2);
+
+    /* marker of the line that is currently sung */
+    if (lrc_center)
+    {
+        x = lyric_map_x(get_time_start(lrc_center), width);
+        display->vline(x, y0, y0+LRC_MAP_HEIGHT-1);
+    }
+
+    set_to_default(display);
+}
+
 static void display_lrcs(void)
 {
     long time_start, time_end, time_elapsed, rin, len;
@@ -1863,7 +2008,10 @@ static void display_lrcs(void)
             lrc_line = lrc_line->next;
         }
         if (!lrc_line && ypos < vp_lyrics[i].height && prefs.autoscroll)
-            display->putsxy(0, ypos, "[end]");
+            display->putsxy(0, ypos, current.truncated?
+                                        "[end - lyrics truncated]": "[end]");
+
+        draw_lyric_map(lrc_center, i);
 
         display->update_viewport();
         display->set_viewport(NULL);
@@ -2173,6 +2321,8 @@ static void load_or_save_settings(bool save)
             "display time", NULL },
         { TYPE_BOOL, 0, 1, { .bool_p = &prefs.backlight_on },
             "backlight on", NULL },
+        { TYPE_BOOL, 0, 1, { .bool_p = &prefs.show_map },
+            "show lyric map", NULL },
 
         { TYPE_STRING, 0, sizeof(prefs.lrc_directory),
             { .string = prefs.lrc_directory }, "lrc directory", NULL },
@@ -2199,6 +2349,7 @@ static void load_or_save_settings(bool save)
         prefs.display_title = true;
         prefs.display_time = true;
         prefs.backlight_on = false;
+        prefs.show_map = true;
 #ifdef LRC_SUPPORT_ID3
         prefs.read_id3 = true;
 #endif
@@ -2221,6 +2372,7 @@ static bool lrc_theme_menu(void)
         LRC_MENU_STATUSBAR,
         LRC_MENU_DISP_TITLE,
         LRC_MENU_DISP_TIME,
+        LRC_MENU_SHOW_MAP,
 #ifdef HAVE_LCD_COLOR
         LRC_MENU_INACTIVE_COLOR,
 #endif
@@ -2233,6 +2385,7 @@ static bool lrc_theme_menu(void)
     MENUITEM_STRINGLIST(menu, "Theme Settings", NULL,
                         "Show Statusbar", "Display Title",
                         "Display Time",
+                        "Show Lyric Map",
 #ifdef HAVE_LCD_COLOR
                         "Inactive Colour",
 #endif
@@ -2250,6 +2403,9 @@ static bool lrc_theme_menu(void)
                 break;
             case LRC_MENU_DISP_TIME:
                 usb = rb->set_bool("Display Time", &prefs.display_time);
+                break;
+            case LRC_MENU_SHOW_MAP:
+                usb = rb->set_bool("Show Lyric Map", &prefs.show_map);
                 break;
 #ifdef HAVE_LCD_COLOR
             case LRC_MENU_INACTIVE_COLOR:
@@ -2695,6 +2851,10 @@ static int lrc_main(void)
         vp_lyrics[i].flags &= ~VP_FLAG_ALIGNMENT_MASK;
         vp_lyrics[i].y += h;
         vp_lyrics[i].height -= h;
+        /* leave room for the lyric map strip at the bottom */
+        if (prefs.show_map &&
+            vp_lyrics[i].height > LRC_MAP_HEIGHT + font_ui_height)
+            vp_lyrics[i].height -= LRC_MAP_HEIGHT;
     }
 
 #ifdef HAVE_BACKLIGHT
@@ -2815,6 +2975,12 @@ enum plugin_status plugin_start(const void* parameter)
     lrc_buffer = rb->plugin_get_buffer(&lrc_buffer_size);
     lrc_buffer = ALIGN_UP(lrc_buffer, 4); /* 4 bytes aligned */
     lrc_buffer_size = (lrc_buffer_size - 4)&~3;
+    /* Cap the lyric text at LRC_MAX_LYRICS_SIZE (300 KiB).  Everything
+     * between that cap and lrc_buffer_size is still available for the
+     * break-position cache, which grows down from lrc_buffer_end. */
+    lrc_text_limit = lrc_buffer_size;
+    if (lrc_text_limit > (size_t)LRC_MAX_LYRICS_SIZE)
+        lrc_text_limit = (size_t)LRC_MAX_LYRICS_SIZE;
 
     reset_current_data();
     current.id3 = NULL;

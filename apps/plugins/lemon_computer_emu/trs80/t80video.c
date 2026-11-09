@@ -51,7 +51,7 @@ void t80_render_video(void) {
     memset(t80_fb, 0, (size_t)T80_FB_W * T80_FB_H * sizeof(uint16_t));
     for (row = 0; row < T80_ROWS; row++) {
         for (col = 0; col < T80_COLS; col++) {
-            uint8_t b = trs_mem[T80_VIDEO_BASE + row * T80_COLS + col];
+            uint8_t b = le_ram[T80_VIDEO_BASE + row * T80_COLS + col];
             t80_draw_char(col, row, b & 0x7F, COLOR_PHOSPHOR);
         }
     }

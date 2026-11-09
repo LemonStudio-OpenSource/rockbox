@@ -3,10 +3,10 @@
 #include <stdint.h>
 #include "t80core.h"
 
-/* framebuffer: pointer allocated by the UI from the plugin buffer
-   (defined in t80video.c) */
-#define T80_FB_W 320
-#define T80_FB_H 192
+/* framebuffer: the UI points this at the shared le_fb[] array from
+   core/mempool.h (defined in t80video.c) */
+#define T80_FB_W LE_FB_W
+#define T80_FB_H LE_FB_H
 extern uint16_t* t80_fb;
 
 /* set the framebuffer pointer (must point at T80_FB_W*T80_FB_H uint16)

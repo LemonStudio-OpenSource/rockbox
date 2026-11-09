@@ -1,4 +1,5 @@
 lemon_computer_emu.c
+core/mempool.c
 apple1/apple1.c
 apple2/apple2.c
 apple2/a2core.c

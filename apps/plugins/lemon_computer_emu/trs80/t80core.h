@@ -2,18 +2,21 @@
 #define T80CORE_H
 #include <stdint.h>
 #include "../core/zilogz80.h"
+#include "../core/mempool.h"
 
 /* TRS-80 Model I / III (Level II) core: flat memory, keyboard matrix,
    Z80 integration.
    UI (plugin) provides the ROM bytes via trs80_load_rom_a/b and calls
    trs80_init / trs80_reset / trs80_step.  The optional logger is passed
    in via trs80_init.  Memory + keyboard map follow the real Model I
-   (see t80core.c header comments). */
+   (see t80core.c header comments).
+
+   The 64 KiB RAM image is le_ram[] from core/mempool.h, shared with the
+   Apple 1 and Apple II cores (only one machine runs at a time). */
 
 struct logger;
 
 /* ---------------- state ---------------- */
-extern uint8_t trs_mem[65536];
 /* keyboard matrix: trs_kb_row[r] bit b = 1 means that key is pressed.
    Idle rows read 0x00; a pressed key sets its bit. (matches real HW) */
 extern uint8_t trs_kb_row[8];

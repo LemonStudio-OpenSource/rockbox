@@ -2,28 +2,26 @@
 #include <stdarg.h>
 #include "plugin.h"
 #include "../core/mos6502.h"
+#include "../core/mempool.h"
 
 /* ============================================================
    Logging
    ============================================================ */
 #define APPLE1_LOG_PATH "/lemon_computer_emu/logs/apple/apple1/apple1.log"
-#define APPLE1_LOG_CAP  (128 * 1024)
+#define APPLE1_LOG_CAP  (32 * 1024)
 
-static char apple1_log_fallback[4096];
 static logger_t apple1_log;
 static long apple1_log_start_ticks = 0;
 
 static void apple1_log_setup(void) {
-    size_t avail = 0;
-    char* buf = rb->plugin_get_buffer(&avail);
-    size_t cap;
+    size_t cap = 0;
+    /* the log buffer is shared with the other two emulators, see
+       core/mempool.h - they never run at the same time */
+    char* buf = le_log_buffer(APPLE1_LOG_CAP, &cap);
 
-    if (!buf || avail < 4096) {
-        buf = apple1_log_fallback;
-        cap = sizeof(apple1_log_fallback);
-    }
-    else {
-        cap = (avail < APPLE1_LOG_CAP) ? avail : APPLE1_LOG_CAP;
+    if (!buf || cap == 0) {
+        buf = NULL;
+        cap = 0;
     }
     logger_init(&apple1_log, buf, cap, APPLE1_LOG_PATH);
 }
@@ -75,7 +73,8 @@ static void init_input(void) {
 #define MAX_ROWS 24
 
 static mos6502_t cpu;
-static uint8_t mem[65536];
+/* the 64 KiB RAM image lives in core/mempool.c and is shared with the
+   other two emulated machines (only one of them runs at a time) */
 static char video[MAX_ROWS][MAX_COLS + 1];
 static int cols, rows;
 static int cursor_x = 0, cursor_y = 0;
@@ -322,9 +321,9 @@ static uint8_t apple1_read(mos6502_t* c, uint16_t addr) {
         return key_q_empty() ? 0x00 : 0x80;
     }
     if (addr == 0xD0F2 || addr == 0xD012) {
-        return mem[addr] & 0x7F;
+        return le_ram[addr] & 0x7F;
     }
-    return mem[addr];
+    return le_ram[addr];
 }
 
 static void apple1_write(mos6502_t* c, uint16_t addr, uint8_t val) {
@@ -334,7 +333,7 @@ static void apple1_write(mos6502_t* c, uint16_t addr, uint8_t val) {
         return;
     }
     if (addr >= 0xE000) return;   /* ROM 写保护 */
-    mem[addr] = val;
+    le_ram[addr] = val;
 }
 
 /* ============================================================
@@ -345,7 +344,7 @@ static bool load_rom(void) {
     if (fd < 0) { LOG("AM27C256@DIP28.BIN not found"); return false; }
     off_t pos = rb->lseek(fd, 0x0000, SEEK_SET);
     if (pos < 0) { rb->close(fd); return false; }
-    rb->read(fd, mem + 0xE000, 0x2000);
+    rb->read(fd, le_ram + 0xE000, 0x2000);
     rb->close(fd);
     LOG("Apple BASIC (Block 0) loaded");
     return true;
@@ -356,7 +355,7 @@ static bool load_monitor(void) {
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
     if (size > 0x100) size = 0x100;
-    rb->read(fd, mem + 0xFF00, size);
+    rb->read(fd, le_ram + 0xFF00, size);
     rb->close(fd);
     return true;
 }
@@ -366,7 +365,7 @@ static bool load_apple_basic_v2(void) {
     if (fd < 0) { LOG("AM27C256@DIP28.BIN not found"); return false; }
     off_t pos = rb->lseek(fd, 0x2000, SEEK_SET);
     if (pos < 0) { rb->close(fd); return false; }
-    rb->read(fd, mem + 0xE000, 0x2000);
+    rb->read(fd, le_ram + 0xE000, 0x2000);
     rb->close(fd);
     LOG("Apple BASIC (Block 1, Krusader 1.3) loaded");
     return true;
@@ -425,7 +424,7 @@ static bool load_ms_basic(void) {
         LOG("MS-BASIC file not found anywhere");
         return false;
     }
-    rb->read(fd, mem + 0xE000, 0x2000);
+    rb->read(fd, le_ram + 0xE000, 0x2000);
     rb->close(fd);
     LOG("MS-BASIC loaded");
     return true;
@@ -437,7 +436,7 @@ static bool load_ms_basic(void) {
 static bool save_state(void) {
     int fd = rb->open("/lemon_computer_emu/states/apple/apple1/apple_i_ram_data.bin", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
-    rb->write(fd, mem, 65536);
+    rb->write(fd, le_ram, 65536);
     uint8_t state[8];
     state[0] = cpu.pc & 0xFF;
     state[1] = (cpu.pc >> 8) & 0xFF;
@@ -457,7 +456,7 @@ static bool restore_state(void) {
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
     if (size < 65536 + 8) { rb->close(fd); return false; }
-    rb->read(fd, mem, 65536);
+    rb->read(fd, le_ram, 65536);
     uint8_t state[8];
     rb->read(fd, state, sizeof(state));
     rb->close(fd);
@@ -536,20 +535,24 @@ enum plugin_status apple1_run(const void* parameter) {
 
     mos6502_init(&cpu, apple1_read, apple1_write, NULL, &apple1_log);
 
+    /* the RAM image is shared with the other emulators, so wipe whatever
+       the previously run machine left behind before loading the ROM */
+    le_ram_clear();
+
     rom_loaded = load_rom();
     if (!rom_loaded) rb->splash(HZ, "ROM not found");
 
     init_video_text();
 
     if (!load_monitor()) {
-        mem[0xFFEF] = 0x4C; mem[0xFFF0] = 0x11; mem[0xFFF1] = 0xD0;
-        mem[0xFFD0] = 0x4C; mem[0xFFD1] = 0x10; mem[0xFFD2] = 0xD0;
+        le_ram[0xFFEF] = 0x4C; le_ram[0xFFF0] = 0x11; le_ram[0xFFF1] = 0xD0;
+        le_ram[0xFFD0] = 0x4C; le_ram[0xFFD1] = 0x10; le_ram[0xFFD2] = 0xD0;
     }
 
-    mem[0xFFFC] = 0x00;
-    mem[0xFFFD] = 0xE0;
-    mem[0xFFFE] = 0x00;
-    mem[0xFFFF] = 0xFF;
+    le_ram[0xFFFC] = 0x00;
+    le_ram[0xFFFD] = 0xE0;
+    le_ram[0xFFFE] = 0x00;
+    le_ram[0xFFFF] = 0xFF;
 
     mos6502_reset(&cpu);
     cpu.pc = 0xE000;
@@ -725,7 +728,7 @@ enum plugin_status apple1_run(const void* parameter) {
                 }
                 else if (input_len == 3 && input_buf[0] == 'R' && input_buf[1] == 'S' && input_buf[2] == 'T') {
                     input_len = 0;
-                    rb->memset(mem, 0, 0xE000);
+                    rb->memset(le_ram, 0, 0xE000);
                     for (int r = 0; r < MAX_ROWS; r++) rb->memset(video[r], ' ', MAX_COLS);
                     cursor_x = 0; cursor_y = 0;
                     mos6502_reset(&cpu);
@@ -827,10 +830,10 @@ enum plugin_status apple1_run(const void* parameter) {
                         if (ms_basic_mode) {
                             int base = MS_LINBUF_BASE_OSI;
                             for (int i = 0; i < input_len && (base + i) < MS_LINBUF_MAX; i++) {
-                                mem[base + i] = (uint8_t)input_buf[i];
+                                le_ram[base + i] = (uint8_t)input_buf[i];
                             }
                             if (base + input_len <= MS_LINBUF_MAX) {
-                                mem[base + input_len] = 0x00;
+                                le_ram[base + input_len] = 0x00;
                             }
                             LOG("LINBUF written at $13: %d chars", input_len);
                         }

@@ -10,7 +10,8 @@
    ============================================================ */
 
    /* ---------------- state ---------------- */
-uint8_t a2_mem[65536];
+/* The 64 KiB RAM image is le_ram[] from core/mempool.c; it used to be a
+   private array here (see core/mempool.h for why it is shared now). */
 int a2_sw_text = 1;
 int a2_sw_mixed = 0;
 int a2_sw_page2 = 0;
@@ -44,8 +45,8 @@ static void soft_switch(uint16_t addr, uint8_t val) {
 }
 
 uint8_t a2_read(uint16_t addr) {
-    if (addr < 0xC000) return a2_mem[addr];
-    if (addr >= 0xD000) return a2_mem[addr];
+    if (addr < 0xC000) return le_ram[addr];
+    if (addr >= 0xD000) return le_ram[addr];
     switch (addr) {
     case 0xC000: return a2_kbd_key;
     case 0xC010:
@@ -65,7 +66,7 @@ uint8_t a2_read(uint16_t addr) {
 }
 
 void a2_write(uint16_t addr, uint8_t val) {
-    if (addr < 0xC000) { a2_mem[addr] = val; return; }
+    if (addr < 0xC000) { le_ram[addr] = val; return; }
     if (addr >= 0xD000) return;       /* ROM write-protect */
     soft_switch(addr, val);
 }
@@ -92,7 +93,7 @@ void a2_load_rom(const uint8_t* rom, uint32_t size) {
     }
     if (size > 0) {
         int i;
-        for (i = 0; i < (int)size; i++) a2_mem[0x10000 - size + i] = rom[i];
+        for (i = 0; i < (int)size; i++) le_ram[0x10000 - size + i] = rom[i];
     }
 }
 

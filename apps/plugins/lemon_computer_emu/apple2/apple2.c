@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include "plugin.h"
 #include "../core/logger.h"
+#include "../core/mempool.h"
 #include "a2core.h"
 #include "a2video.h"
 
@@ -25,21 +26,18 @@
 
    /* ---------------- logging ---------------- */
 #define APPLE2_LOG_PATH "/lemon_computer_emu/logs/apple/apple2/apple2.log"
-#define APPLE2_LOG_CAP  (64 * 1024)
+#define APPLE2_LOG_CAP  (32 * 1024)
 
-static char apple2_log_fallback[4096];
 static logger_t apple2_log;
 
 static void log_init(void) {
-    size_t avail = 0;
-    char *buf = rb->plugin_get_buffer(&avail);
-    size_t cap;
+    size_t cap = 0;
+    /* shared with the other two emulators, see core/mempool.h */
+    char *buf = le_log_buffer(APPLE2_LOG_CAP, &cap);
 
-    if (!buf || avail < 4096) {
-        buf = apple2_log_fallback;
-        cap = sizeof(apple2_log_fallback);
-    } else {
-        cap = (avail < APPLE2_LOG_CAP) ? avail : APPLE2_LOG_CAP;
+    if (!buf || cap == 0) {
+        buf = NULL;
+        cap = 0;
     }
     logger_init(&apple2_log, buf, cap, APPLE2_LOG_PATH);
 }
@@ -69,15 +67,15 @@ static bool load_rom(void) {
     if (fd < 0) return false;
     off_t size = rb->ffilesize(fd);
     LOG("ROM size %ld", (long)size);
-    static uint8_t rombuf[0x5000];
+    /* le_rom[] is the shared ROM staging area from core/mempool.h */
     uint32_t rd = size;
-    if (rd > sizeof(rombuf)) {
-        rb->lseek(fd, size - (off_t)sizeof(rombuf), SEEK_SET);
-        rd = sizeof(rombuf);
+    if (rd > sizeof(le_rom)) {
+        rb->lseek(fd, size - (off_t)sizeof(le_rom), SEEK_SET);
+        rd = sizeof(le_rom);
     }
-    rb->read(fd, rombuf, rd);
+    rb->read(fd, le_rom, rd);
     rb->close(fd);
-    a2_load_rom(rombuf, rd);
+    a2_load_rom(le_rom, rd);
     return true;
 }
 
@@ -194,7 +192,7 @@ static bool save_state(void) {
     int fd = rb->open("/lemon_computer_emu/states/apple/apple2/apple2_ram.bin",
         O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
-    rb->write(fd, a2_mem, 65536);
+    rb->write(fd, le_ram, 65536);
     uint8_t st[8];
     st[0] = a2_get_pc() & 0xFF;
     st[1] = (a2_get_pc() >> 8) & 0xFF;
@@ -213,7 +211,7 @@ static bool restore_state(void) {
     if (fd < 0) return false;
     size_t size = rb->ffilesize(fd);
     if (size < 65536 + 8) { rb->close(fd); return false; }
-    rb->read(fd, a2_mem, 65536);
+    rb->read(fd, le_ram, 65536);
     uint8_t st[8];
     rb->read(fd, st, sizeof(st));
     rb->close(fd);
@@ -355,7 +353,7 @@ static bool handle_play(void) {
         erase_typed();
         DIR* dir = rb->opendir("/lemon_computer_emu/programs/apple/apple2");
         if (dir) {
-            for (int i = 0x400; i < 0x800; i++) a2_mem[i] = 0xA0;
+            for (int i = 0x400; i < 0x800; i++) le_ram[i] = 0xA0;
             int row = 0;
             struct dirent *entry;
             while ((entry = rb->readdir(dir)) != NULL && row < 23)
@@ -366,7 +364,7 @@ static bool handle_play(void) {
                 int len = rb->strlen(entry->d_name);
                 if (len > 40) len = 40;
                 for (int i = 0; i < len; i++)
-                    a2_mem[0x400 + lb + i] = (uint8_t)entry->d_name[i] |
+                    le_ram[0x400 + lb + i] = (uint8_t)entry->d_name[i] |
                                              0x80;
                 row++;
             }
@@ -465,7 +463,7 @@ static void draw_ui(void) {
     rb->lcd_set_background(COLOR_BG);
     draw_status();
     a2_render_video();
-    rb->lcd_bitmap_part(a2_fb, 0, 0, VIDEO_W, 0, VIDEO_TOP, VIDEO_W,
+    rb->lcd_bitmap_part(le_fb, 0, 0, VIDEO_W, 0, VIDEO_TOP, VIDEO_W,
                         VIDEO_H);
     rb->lcd_update_rect(0, VIDEO_TOP, VIDEO_W, VIDEO_H);
     draw_keyboard();
@@ -493,6 +491,10 @@ enum plugin_status apple2_run(const void *parameter) {
         logger_flush(&apple2_log);
         return PLUGIN_ERROR;
     }
+
+    /* the RAM image is shared with the other emulators, so wipe whatever
+       the previously run machine left behind before loading the ROM */
+    le_ram_clear();
 
     if (!load_rom()) {
         rb->splash(HZ * 2, "ROM not found");

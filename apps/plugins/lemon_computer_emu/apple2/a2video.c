@@ -9,7 +9,8 @@
    320x192 framebuffer
    ============================================================ */
 
-uint16_t a2_fb[A2_FB_W * A2_FB_H];
+/* The framebuffer is le_fb[] from core/mempool.c, shared with the
+   TRS-80 renderer; see the comment in core/mempool.h. */
 
 #define COLOR_PHOSPHOR 0x0FEF  /* light green */
 
@@ -42,7 +43,7 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color) {
         for (i = 0; i < w; i++) {
             int xx = x + i;
             if (xx < 0 || xx >= A2_FB_W) continue;
-            a2_fb[yy * A2_FB_W + xx] = color;
+            le_fb[yy * A2_FB_W + xx] = color;
         }
     }
 }
@@ -62,7 +63,7 @@ void a2_draw_char_cell(int col, int row, int ch, uint16_t fg, uint16_t bg) {
                 int xx = x + c + 1;
                 int yy = y + r;
                 if (xx < A2_FB_W && yy < A2_FB_H)
-                    a2_fb[yy * A2_FB_W + xx] = fg;
+                    le_fb[yy * A2_FB_W + xx] = fg;
             }
         }
     }
@@ -74,7 +75,7 @@ static void render_text(void) {
     for (row = 0; row < 24; row++) {
         int lb = a2_line_base(row);
         for (col = 0; col < 40; col++) {
-            uint8_t b = a2_mem[base + lb + col];
+            uint8_t b = le_ram[base + lb + col];
             a2_draw_char_cell(col, row, b & 0x7F, COLOR_PHOSPHOR, 0);
         }
     }
@@ -87,7 +88,7 @@ static void render_lores(void) {
     for (row = 0; row < maxrow; row++) {
         for (col = 0; col < 40; col++) {
             int lb = a2_line_base(row / 2);
-            uint8_t b = a2_mem[base + lb + col];
+            uint8_t b = le_ram[base + lb + col];
             int color = (row & 1) ? ((b >> 4) & 0xF) : (b & 0xF);
             fill_rect(col * 8, row * 4, 8, 4, palette16[color]);
         }
@@ -96,7 +97,7 @@ static void render_lores(void) {
         for (row = 20; row < 24; row++) {
             int lb = a2_line_base(row);
             for (col = 0; col < 40; col++) {
-                uint8_t b = a2_mem[base + lb + col];
+                uint8_t b = le_ram[base + lb + col];
                 a2_draw_char_cell(col, row, b & 0x7F, COLOR_PHOSPHOR, 0);
             }
         }
@@ -111,13 +112,13 @@ static void render_hires(void) {
         int lo = a2_hires_line_off(y);
         if (y >= A2_FB_H) break;
         for (xb = 0; xb < 40; xb++) {
-            uint8_t b = a2_mem[base + lo + xb];
+            uint8_t b = le_ram[base + lo + xb];
             for (x = 0; x < 7; x++) {
                 int bit = (b >> (6 - x)) & 1;
                 if (!bit) continue;
                 int xx = xb * 7 + x + 20;
                 if (xx < A2_FB_W && y < A2_FB_H)
-                    a2_fb[y * A2_FB_W + xx] = COLOR_PHOSPHOR;
+                    le_fb[y * A2_FB_W + xx] = COLOR_PHOSPHOR;
             }
         }
     }
@@ -126,7 +127,7 @@ static void render_hires(void) {
         for (int row = 20; row < 24; row++) {
             int lb = a2_line_base(row);
             for (int col = 0; col < 40; col++) {
-                uint8_t b = a2_mem[base2 + lb + col];
+                uint8_t b = le_ram[base2 + lb + col];
                 a2_draw_char_cell(col, row, b & 0x7F, COLOR_PHOSPHOR, 0);
             }
         }
@@ -134,7 +135,7 @@ static void render_hires(void) {
 }
 
 void a2_render_video(void) {
-    memset(a2_fb, 0, sizeof(a2_fb));
+    memset(le_fb, 0, sizeof(le_fb));
     if (a2_sw_text) {
         render_text();
     } else if (a2_sw_hires) {

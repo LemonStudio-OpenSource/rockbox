@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include "plugin.h"
 #include "../core/logger.h"
+#include "../core/mempool.h"
 #include "t80core.h"
 #include "t80video.h"
 
@@ -23,17 +24,23 @@
 
 
 /* ---------------- logging ----------------
-   The plugin buffer is reserved for the video framebuffer (which needs
-   ~122KB), so the log uses only its small static fallback buffer. */
+   The framebuffer is a static array shared with the Apple II renderer
+   (core/mempool.h), so the plugin buffer is free and the log can use
+   the same shared scratch area as the other two emulators. */
 #define TRS80_LOG_PATH "/lemon_computer_emu/logs/tandy/trs80/trs80.log"
-#define TRS80_LOG_CAP  (64 * 1024)
+#define TRS80_LOG_CAP  (32 * 1024)
 
-static char trs80_log_fallback[4096];
 static logger_t trs80_log;
 
 static void log_init(void) {
-    logger_init(&trs80_log, trs80_log_fallback, sizeof(trs80_log_fallback),
-                TRS80_LOG_PATH);
+    size_t cap = 0;
+    char* buf = le_log_buffer(TRS80_LOG_CAP, &cap);
+
+    if (!buf || cap == 0) {
+        buf = NULL;
+        cap = 0;
+    }
+    logger_init(&trs80_log, buf, cap, TRS80_LOG_PATH);
 }
 
 static void trs80_log_msg(const char* fmt, ...) {
@@ -61,30 +68,29 @@ static void trs80_log_msg(const char* fmt, ...) {
 #define PROG_DIR    "/lemon_computer_emu/programs/tandy/trs80"
 #define PROG_DEFAULT "/lemon_computer_emu/programs/tandy/trs80/TRS80_PROGRAM.txt"
 
-/* claim the video framebuffer from the single contiguous plugin buffer.
-   Must be called once, before load_roms. */
-static bool t80_fb_alloc(void) {
-    size_t avail = 0;
-    uint16_t* fb = (uint16_t*)rb->plugin_get_buffer(&avail);
-    if (!fb || avail < (size_t)(T80_FB_W * T80_FB_H * sizeof(uint16_t)))
-        return false;
-    t80_video_init(fb);
-    return true;
+/* The video framebuffer is the shared le_fb[] array from
+   core/mempool.c (also used by the Apple II renderer), so no part of
+   the plugin buffer has to be reserved any more. */
+static void t80_video_setup(void) {
+    t80_video_init(le_fb);
 }
 
-static bool load_roms(void) {
-    static uint8_t roma[0x2000];
-    static uint8_t romb[0x1000];
+/* ROM images are staged in the shared le_rom[] area, see core/mempool.h */
+#define ROM_A_SIZE 0x2000
+#define ROM_B_SIZE 0x1000
+#define ROM_A_BUF  (le_rom)
+#define ROM_B_BUF  (le_rom + ROM_A_SIZE)
 
+static bool load_roms(void) {
     int fd = rb->open(ROM_A_PATH, O_RDONLY);
     if (fd < 0) { LOG("ROM A open failed"); return false; }
     off_t s = rb->ffilesize(fd);
-    if (s < (off_t)sizeof(roma)) {
+    if (s < (off_t)ROM_A_SIZE) {
         LOG("ROM A too small: %d", (int)s);
         rb->close(fd);
         return false;
     }
-    if (rb->read(fd, roma, sizeof(roma)) != (ssize_t)sizeof(roma)) {
+    if (rb->read(fd, ROM_A_BUF, ROM_A_SIZE) != (ssize_t)ROM_A_SIZE) {
         rb->close(fd);
         return false;
     }
@@ -93,19 +99,19 @@ static bool load_roms(void) {
     fd = rb->open(ROM_B_PATH, O_RDONLY);
     if (fd < 0) { LOG("ROM B open failed"); return false; }
     s = rb->ffilesize(fd);
-    if (s < (off_t)sizeof(romb)) {
+    if (s < (off_t)ROM_B_SIZE) {
         LOG("ROM B too small: %d", (int)s);
         rb->close(fd);
         return false;
     }
-    if (rb->read(fd, romb, sizeof(romb)) != (ssize_t)sizeof(romb)) {
+    if (rb->read(fd, ROM_B_BUF, ROM_B_SIZE) != (ssize_t)ROM_B_SIZE) {
         rb->close(fd);
         return false;
     }
     rb->close(fd);
 
-    trs80_load_rom_a(roma, sizeof(roma));
-    trs80_load_rom_b(romb, sizeof(romb));
+    trs80_load_rom_a(ROM_A_BUF, ROM_A_SIZE);
+    trs80_load_rom_b(ROM_B_BUF, ROM_B_SIZE);
     LOG("TRS-80 Level II v1.3 ROMs loaded");
     return true;
 }
@@ -293,7 +299,7 @@ static bool save_state(void) {
     rb->mkdir("/lemon_computer_emu/states/tandy/trs80");
     int fd = rb->open(SAVE_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0) return false;
-    rb->write(fd, trs_mem, 65536);
+    rb->write(fd, le_ram, 65536);
     Z80 tmp;
     trs80_save_cpu(&tmp);
     rb->write(fd, &tmp, sizeof(Z80));
@@ -306,7 +312,7 @@ static bool restore_state(void) {
     if (fd < 0) return false;
     size_t sz = rb->ffilesize(fd);
     if (sz < 65536 + sizeof(Z80)) { rb->close(fd); return false; }
-    rb->read(fd, trs_mem, 65536);
+    rb->read(fd, le_ram, 65536);
     Z80 tmp;
     rb->read(fd, &tmp, sizeof(Z80));
     rb->close(fd);
@@ -512,7 +518,7 @@ static bool submit_input(void) {
    ============================================================ */
 /* warm reset: clear usable RAM (0x3000-0xFFFF) and re-hook the CPU */
 static void warm_reset(void) {
-    for (int i = 0x3000; i < 0x10000; i++) trs_mem[i] = 0;
+    for (int i = 0x3000; i < 0x10000; i++) le_ram[i] = 0;
     trs80_reset();
 }
 
@@ -592,14 +598,12 @@ enum plugin_status trs80_run(const void* parameter) {
         return PLUGIN_ERROR;
     }
 
-    /* allocate the video framebuffer from the plugin buffer.
-       PLUGIN_BUFFER is a single contiguous area that must be claimed up
-       front, so the log above intentionally uses its static fallback. */
-    if (!t80_fb_alloc()) {
-        rb->splash(HZ * 2, "Not enough buffer");
-        logger_flush(&trs80_log);
-        return PLUGIN_ERROR;
-    }
+    /* the framebuffer and the RAM image are shared with the other
+       emulators (core/mempool.h); no plugin buffer space is needed */
+    t80_video_setup();
+
+    /* wipe whatever the previously run machine left in the shared RAM */
+    le_ram_clear();
 
     if (!load_roms()) {
         rb->splash(HZ * 2, "TRS-80 ROMs not found");

@@ -1,16 +1,20 @@
 #ifndef A2CORE_H
 #define A2CORE_H
 #include <stdint.h>
+#include "../core/mempool.h"
 
 /* Apple II core: flat memory, softswitches, CPU integration.
    UI (plugin) provides the ROM bytes via a2_load_rom and calls
    a2_init / a2_reset / a2_step.  The optional logger is passed
-   in via a2_init and forwarded to the 6502 core. */
+   in via a2_init and forwarded to the 6502 core.
+
+   The 64 KiB RAM image is le_ram[] from core/mempool.h.  Apple II
+   shares it with the Apple 1 and TRS-80 cores, which is safe because
+   only one machine is emulated at a time. */
 
 struct logger;
 
 /* ---------------- state ---------------- */
-extern uint8_t a2_mem[65536];
 extern int  a2_sw_text;   /* true=text file (nonzero) */
 extern int  a2_sw_mixed;
 extern int  a2_sw_page2;

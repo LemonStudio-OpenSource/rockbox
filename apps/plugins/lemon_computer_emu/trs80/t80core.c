@@ -34,7 +34,8 @@
    ============================================================ */
 
 /* ---------------- state ---------------- */
-uint8_t trs_mem[65536];
+/* The 64 KiB RAM image is le_ram[] from core/mempool.c; it used to be a
+   private array here (see core/mempool.h for why it is shared now). */
 uint8_t trs_kb_row[8];
 Z80 t80_cpu;
 static logger_t* t80_log = NULL;
@@ -54,7 +55,7 @@ uint8_t trs80_read(uint16_t addr) {
         if (addr & 0x80) result |= trs_kb_row[7]; /* 0x3880 */
         return result;
     }
-    return trs_mem[addr];
+    return le_ram[addr];
 }
 
 void trs80_write(uint16_t addr, uint8_t val) {
@@ -64,13 +65,13 @@ void trs80_write(uint16_t addr, uint8_t val) {
 
     /* video display RAM 0x3C00-0x3FFF: writable */
     if (addr >= 0x3C00 && addr <= 0x3FFF) {
-        trs_mem[addr] = val;
+        le_ram[addr] = val;
         return;
     }
 
     /* user RAM from 0x4000 upward */
     if (addr >= 0x4000) {
-        trs_mem[addr] = val;
+        le_ram[addr] = val;
         return;
     }
 
@@ -91,7 +92,7 @@ void trs80_load_rom_a(const uint8_t* rom, uint32_t size) {
     if (size > 0x2000) size = 0x2000;
     if (size > 0) {
         int i;
-        for (i = 0; i < (int)size; i++) trs_mem[i] = rom[i];
+        for (i = 0; i < (int)size; i++) le_ram[i] = rom[i];
     }
 }
 
@@ -99,7 +100,7 @@ void trs80_load_rom_b(const uint8_t* rom, uint32_t size) {
     if (size > 0x1000) size = 0x1000;
     if (size > 0) {
         int i;
-        for (i = 0; i < (int)size; i++) trs_mem[0x2000 + i] = rom[i];
+        for (i = 0; i < (int)size; i++) le_ram[0x2000 + i] = rom[i];
     }
 }
 

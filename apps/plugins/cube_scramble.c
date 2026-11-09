@@ -8,6 +8,7 @@
  ****************************************************************************/
 #include "plugin.h"
 #include "lib/pluginlib_actions.h"
+#include "lib/cjk_font.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -26,12 +27,12 @@ enum timer_state { TIMER_IDLE = 0, TIMER_ARMED, TIMER_RUNNING, TIMER_STOPPED };
 static const struct button_mapping *plugin_contexts[] = { pla_main_ctx };
 /* display names and the short keys used in the statistics file */
 static const char * const puzzle_name[NUM_PUZZLES] =
-    { "3x3x3", "2x2x2", "4x4x4", "Pyraminx" };
+    { "3x3x3", "2x2x2", "4x4x4", "金字塔" };
 static const char * const puzzle_key[NUM_PUZZLES] =
     { "3x3", "2x2", "4x4", "pyraminx" };
 static const int puzzle_moves[NUM_PUZZLES] = { 20, 11, 40, 11 };
 static const char * const menu_items[MENU_ITEMS] =
-    { "Scramble", "Timer", "", "Quit" };   /* row 2 is the puzzle name */
+    { "打乱", "计时", "", "退出" };   /* row 2 is the puzzle name */
 /* face coding: 0=U 1=D 2=L 3=R 4=F 5=B */
 static const char face_chars[6] = { 'U', 'D', 'L', 'R', 'F', 'B' };
 static const int face_axis[6] = { 0, 0, 1, 1, 2, 2 };
@@ -93,7 +94,7 @@ static int text_width(const char *s)
 static void draw_header(const char *right)
 {
     int y = 2, w, x;
-    lcd_text(MARGIN, y, "CUBE SCRAMBLE");
+    lcd_text(MARGIN, y, "魔方助手");
     if (right != NULL && right[0] != '\0')
     {
         w = text_width(right);
@@ -355,7 +356,7 @@ static void draw_scramble(void)
     rb->lcd_clear_display();
     draw_header(puzzle_name[g_puzzle]);
     info_y = 2 + g_fh + 4;
-    rb->snprintf(line, sizeof(line), "%s  %d moves",
+    rb->snprintf(line, sizeof(line), "%s  %d 步",
                  puzzle_name[g_puzzle], g_move_count);
     lcd_text(MARGIN, info_y, line);
     wrap_scramble();
@@ -383,12 +384,12 @@ static void draw_scramble(void)
         }
         y += g_lh;
     }
-    lcd_text(MARGIN, footer1, "SEL:new  L/R:puzzle");
+    lcd_text(MARGIN, footer1, "选择:新打乱 左右:项目");
     if (g_pages > 1)
-        rb->snprintf(line, sizeof(line), "UP/DN p%d/%d  CANCEL",
+        rb->snprintf(line, sizeof(line), "上下 第%d/%d页 返回",
                      g_page + 1, g_pages);
     else
-        rb->strlcpy(line, "CANCEL:menu", sizeof(line));
+        rb->strlcpy(line, "返回:菜单", sizeof(line));
     lcd_text(MARGIN, footer2, line);
     rb->lcd_update();
 }
@@ -402,10 +403,10 @@ static void draw_timer(void)
     int n, max_cs, bar_w, y, i;
     rb->lcd_clear_display();
     draw_header(puzzle_name[p]);
-    if (g_timer_state == TIMER_ARMED)       status = "READY";
-    else if (g_timer_state == TIMER_RUNNING) status = "GO";
-    else if (g_timer_state == TIMER_STOPPED) status = "STOPPED";
-    else                                     status = "SELECT TO START";
+    if (g_timer_state == TIMER_ARMED)       status = "准备";
+    else if (g_timer_state == TIMER_RUNNING) status = "开始";
+    else if (g_timer_state == TIMER_STOPPED) status = "已停止";
+    else                                     status = "选择开始";
     y = 2 + g_fh + 4;
     lcd_text(MARGIN, y, status);
     fmt_time(timer_elapsed_cs(), timebuf, sizeof(timebuf));
@@ -417,13 +418,13 @@ static void draw_timer(void)
     fmt_or_dash(g_best_avg5[p], best5buf, sizeof(best5buf));
     fmt_or_dash(g_total_count[p] ? (int)(g_total_cs[p] / g_total_count[p]) : 0,
                 meanbuf, sizeof(meanbuf));
-    rb->snprintf(line, sizeof(line), "best  %s", bestbuf);
+    rb->snprintf(line, sizeof(line), "最佳  %s", bestbuf);
     lcd_text(MARGIN, stats_y, line);
-    rb->snprintf(line, sizeof(line), "avg5  %s", avgbuf);
+    rb->snprintf(line, sizeof(line), "均5   %s", avgbuf);
     lcd_text(MARGIN, stats_y + g_lh, line);
-    rb->snprintf(line, sizeof(line), "best5 %s", best5buf);
+    rb->snprintf(line, sizeof(line), "最佳5 %s", best5buf);
     lcd_text(MARGIN, stats_y + 2 * g_lh, line);
-    rb->snprintf(line, sizeof(line), "mean  %s  n=%d",
+    rb->snprintf(line, sizeof(line), "平均  %s  n=%d",
                  meanbuf, g_total_count[p]);
     lcd_text(MARGIN, stats_y + 3 * g_lh, line);
     footer2 = LCD_HEIGHT - g_fh - 2;
@@ -455,13 +456,13 @@ static void draw_timer(void)
         rb->lcd_hline(MARGIN, LCD_WIDTH - 1 - MARGIN, base_y + 1);
     }
     if (g_timer_state == TIMER_RUNNING)
-        rb->strlcpy(line, "ANY KEY:stop", sizeof(line));
+        rb->strlcpy(line, "任意键:停止", sizeof(line));
     else if (g_timer_state == TIMER_STOPPED)
-        rb->strlcpy(line, "SEL:again CANCEL:menu", sizeof(line));
+        rb->strlcpy(line, "选择:再来 返回:菜单", sizeof(line));
     else
-        rb->strlcpy(line, "SEL:start CANCEL:menu", sizeof(line));
+        rb->strlcpy(line, "选择:开始 返回:菜单", sizeof(line));
     lcd_text(MARGIN, footer1, line);
-    rb->snprintf(line, sizeof(line), "puzzle: %s", puzzle_name[p]);
+    rb->snprintf(line, sizeof(line), "项目: %s", puzzle_name[p]);
     lcd_text(MARGIN, footer2, line);
     rb->lcd_update();
 }
@@ -471,9 +472,9 @@ static void draw_menu(void)
     int top, i;
     rb->lcd_clear_display();
     draw_header(NULL);
-    rb->snprintf(line, sizeof(line), "puzzle: %s", puzzle_name[g_puzzle]);
+    rb->snprintf(line, sizeof(line), "项目: %s", puzzle_name[g_puzzle]);
     lcd_text(MARGIN, 2 + g_fh + 4, line);
-    rb->snprintf(puzzle_row, sizeof(puzzle_row), "Puzzle: %s",
+    rb->snprintf(puzzle_row, sizeof(puzzle_row), "项目: %s",
                  puzzle_name[g_puzzle]);
     top = 2 + g_fh + 6 + 2 * g_lh;
     for (i = 0; i < MENU_ITEMS; i++)
@@ -485,8 +486,8 @@ static void draw_menu(void)
                              LCD_WIDTH - 2 * MARGIN + 4, g_lh + 3);
         lcd_text(MARGIN, y, label);
     }
-    lcd_text(MARGIN, LCD_HEIGHT - 2 * g_lh - 2, "UP/DN:move SEL:open");
-    lcd_text(MARGIN, LCD_HEIGHT - g_fh - 2, "CANCEL:quit");
+    lcd_text(MARGIN, LCD_HEIGHT - 2 * g_lh - 2, "上下:移动 选择:打开");
+    lcd_text(MARGIN, LCD_HEIGHT - g_fh - 2, "返回:退出");
     rb->lcd_update();
 }
 
@@ -495,7 +496,9 @@ enum plugin_status plugin_start(const void *parameter)
 {
     int w = 0, h = 0;
     bool done = false, need_draw = true;
+    int font_id;
     (void)parameter;
+    font_id = rb_cjk_load();
     rb->lcd_getstringsize((const unsigned char *)"Ag", &w, &h);
     g_fh = (h > 0) ? h : 8;
     g_lh = g_fh + 1;
@@ -588,5 +591,6 @@ enum plugin_status plugin_start(const void *parameter)
     }
     rb->lcd_clear_display();
     rb->lcd_update();
+    rb_cjk_unload(font_id);
     return PLUGIN_OK;
 }

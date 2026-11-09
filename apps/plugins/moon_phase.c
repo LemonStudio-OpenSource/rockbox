@@ -17,6 +17,7 @@
 
 #include "plugin.h"
 #include "lib/pluginlib_actions.h"
+#include "lib/cjk_font.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -59,20 +60,20 @@ static int g_view;      /* VIEW_MOON or VIEW_CALENDAR                   */
 
 static const char *const phase_names[PHASE_COUNT] =
 {
-    "NEW", "WAXING CRESCENT", "FIRST QUARTER", "WAXING GIBBOUS",
-    "FULL", "WANING GIBBOUS", "LAST QUARTER", "WANING CRESCENT"
+    "新月", "娥眉月", "上弦月", "盈凸月",
+    "满月", "亏凸月", "下弦月", "残月"
 };
 
 static const char *const month_names[12] =
 {
-    "January", "February", "March", "April", "May", "June", "July",
-    "August", "September", "October", "November", "December"
+    "1月", "2月", "3月", "4月", "5月", "6月",
+    "7月", "8月", "9月", "10月", "11月", "12月"
 };
 
 static const char *const weekday_names[2][7] =
 {
-    { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" },
-    { "S", "M", "T", "W", "T", "F", "S" }
+    { "日", "一", "二", "三", "四", "五", "六" },
+    { "日", "一", "二", "三", "四", "五", "六" }
 };
 
 /* ---- calendar helpers ------------------------------------------------- */
@@ -380,15 +381,15 @@ static void draw_moon_view(void)
 
     by = bottom + 3;
     date_from_jdn(g_jdn + mi.days_new, &ny, &nm, &nd);
-    rb->snprintf(buf, sizeof(buf), "New %04d-%02d-%02d %dd",
+    rb->snprintf(buf, sizeof(buf), "新月 %04d-%02d-%02d %d天",
                  ny, nm, nd, mi.days_new);
     put_text(2, by, buf);
     date_from_jdn(g_jdn + mi.days_full, &ny, &nm, &nd);
-    rb->snprintf(buf, sizeof(buf), "Full %04d-%02d-%02d %dd",
+    rb->snprintf(buf, sizeof(buf), "满月 %04d-%02d-%02d %d天",
                  ny, nm, nd, mi.days_full);
     put_text(2, by + fh, buf);
-    put_text(2, by + 2 * fh, "L/R day  U/D month");
-    put_text(2, by + 3 * fh, "SEL cal  EXIT quit");
+    put_text(2, by + 2 * fh, "左右:日 上下:月");
+    put_text(2, by + 3 * fh, "选择:日历 退出");
 }
 
 /* ---- calendar view ---------------------------------------------------- */
@@ -415,17 +416,17 @@ static void draw_calendar_view(void)
     put_text(LCD_WIDTH - tw - 2, 1, buf);
     put_text(2, 1 + fh, phase_names[mi.phase]);
 
-    rb->snprintf(buf, sizeof(buf), "%s %04d", month_names[month - 1], year);
+    rb->snprintf(buf, sizeof(buf), "%04d年%s", year, month_names[month - 1]);
     tw = text_width(buf);
-    put_text((LCD_WIDTH - tw) / 2, 1 + 2 * fh, buf);
+    put_text(LCD_WIDTH - tw - 2, 1 + fh, buf);
 
     cell_w = (LCD_WIDTH - 4) / 7;
     if (cell_w < 7) cell_w = 7;
     if (cell_w > 46) cell_w = 46;
     grid_x = (LCD_WIDTH - 7 * cell_w) / 2;
 
-    hints_y = LCD_HEIGHT - 2 * fh - 2;
-    grid_top = 2 + 4 * fh;
+    hints_y = LCD_HEIGHT - fh - 2;
+    grid_top = 2 + 3 * fh;
     grid_bottom = hints_y - 3;
     cell_h = (grid_bottom - grid_top) / 6;
     if (cell_h < 1) cell_h = 1;
@@ -441,7 +442,7 @@ static void draw_calendar_view(void)
         const char *name = weekday_names[cell_w >= 20 ? 0 : 1][col];
         tw = text_width(name);
         put_text(grid_x + col * cell_w + (cell_w - tw) / 2,
-                 1 + 3 * fh, name);
+                 1 + 2 * fh, name);
     }
 
     for (i = 0; i < first_wday + ndays; i++)
@@ -476,8 +477,7 @@ static void draw_calendar_view(void)
             rb->lcd_drawrect(x + 1, gy + 1, cell_w - 2, cell_h - 2);
     }
 
-    put_text(2, hints_y, "L/R month  U/D day");
-    put_text(2, hints_y + fh, "SEL moon  EXIT quit");
+    put_text(2, hints_y, "左右:月 上下:日 选择:月相");
 }
 
 /* ---- plugin entry point ----------------------------------------------- */
@@ -487,6 +487,7 @@ enum plugin_status plugin_start(const void *parameter)
     struct tm *now;
     int year = 2026, month = 1, day = 1;
     int action;
+    int font_id;
 
     (void)parameter;
     /* default to today; without a valid RTC fall back to a fixed date that
@@ -510,6 +511,7 @@ enum plugin_status plugin_start(const void *parameter)
     rb->lcd_set_background(LCD_DEFAULT_BG);
 #endif
     rb->lcd_set_drawmode(DRMODE_SOLID);
+    font_id = rb_cjk_load();
     while (1)
     {
         if (g_view == VIEW_MOON)
@@ -524,6 +526,7 @@ enum plugin_status plugin_start(const void *parameter)
         switch (action)
         {
         case PLA_EXIT: case PLA_CANCEL:
+            rb_cjk_unload(font_id);
             return PLUGIN_OK;
         case PLA_SELECT:
             g_view = (g_view == VIEW_MOON) ? VIEW_CALENDAR : VIEW_MOON;

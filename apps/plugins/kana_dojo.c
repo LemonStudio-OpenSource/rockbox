@@ -7,9 +7,9 @@
  * both scripts drawn on top of each other.  The quiz view shows one kana
  * big and asks for its romaji reading, ten questions per round.
  *
- * No CJK font is required: every kana is stored as a small set of line
- * segments inside a 16x16 box and drawn with lcd_drawline(), scaled to the
- * cell size at run time.
+ * The kana are drawn from the real 16-GNU-Unifont glyph bitmaps, loaded
+ * from /.rockbox/fonts/ at start-up and scaled to the cell size at run
+ * time, so no hand-drawn line segments are involved.
  *
  * Controls
  *   reference view: arrows / wheel move the selection, a tap on SELECT
@@ -33,13 +33,13 @@
 
 #include "plugin.h"
 #include "lib/pluginlib_actions.h"
+#include "lib/cjk_font.h"
 
 #define KANA_COUNT 46
 #define GRID_ROWS 10
 #define GRID_COLS 5
-#define MAX_STROKES 6
-#define KANA_STRIDE (1 + MAX_STROKES * 4)
 #define QUIZ_LEN 10
+#define KANA_MAX_PX 96
 #define BEST_FILE ROCKBOX_DIR "/kana_dojo.txt"
 
 #define SCRIPT_HIRA 0
@@ -81,105 +81,31 @@ static const char *const romaji[KANA_COUNT] = {
     "wa", "wo", "n"
 };
 
-/* Hiragana strokes.  Entry format: { stroke_count, x1,y1,x2,y2, ... } with
- * all coordinates in a 16x16 box (0..15).  Unused slots stay zero. */
-static const unsigned char hira[KANA_COUNT][KANA_STRIDE] = {
-    /* a   */ { 4,  3,4,13,4,  9,2,8,14,  8,9,4,12,  4,12,12,12 },
-    /* i   */ { 3,  5,3,4,12,  11,2,10,8,  10,8,9,14 },
-    /* u   */ { 5,  7,2,11,3,  4,5,12,6,  12,6,12,10,  12,10,7,14,  7,14,4,11 },
-    /* e   */ { 4,  7,2,11,3,  4,5,12,6,  12,6,5,11,  5,11,12,13 },
-    /* o   */ { 5,  3,4,13,4,  9,2,9,13,  9,9,5,12,  5,12,12,12,  13,7,14,8 },
-    /* ka  */ { 5,  5,3,11,3,  11,3,11,8,  11,8,5,13,  7,2,6,14,  13,5,13,6 },
-    /* ki  */ { 5,  3,4,12,4,  4,7,12,7,  8,2,8,11,  11,9,4,13,  4,13,9,14 },
-    /* ku  */ { 2,  11,2,4,8,  4,8,11,14 },
-    /* ke  */ { 4,  4,3,4,13,  8,5,13,5,  11,2,11,13,  11,10,13,11 },
-    /* ko  */ { 3,  4,4,12,4,  12,6,4,10,  4,10,12,13 },
-    /* sa  */ { 3,  3,4,12,4,  10,3,6,9,  6,9,12,12 },
-    /* shi */ { 3,  8,2,8,10,  8,10,12,11,  12,11,13,9 },
-    /* su  */ { 5,  2,4,13,4,  8,2,8,12,  8,8,4,11,  4,11,12,10,  12,10,10,7 },
-    /* se  */ { 4,  2,5,13,5,  6,2,6,13,  6,9,12,9,  12,9,12,13 },
-    /* so  */ { 4,  5,2,12,3,  12,3,5,8,  5,8,11,9,  11,9,5,13 },
-    /* ta  */ { 4,  4,3,12,3,  9,3,5,13,  10,8,13,12,  8,11,13,11 },
-    /* chi */ { 4,  4,4,12,4,  10,3,5,9,  5,9,12,10,  12,10,6,14 },
-    /* tsu */ { 4,  3,5,11,5,  11,5,12,10,  12,10,7,14,  7,14,4,12 },
-    /* te  */ { 3,  3,4,12,4,  12,4,5,8,  5,8,13,12 },
-    /* to  */ { 3,  6,3,9,5,  9,5,4,9,  4,9,13,13 },
-    /* na  */ { 5,  3,4,11,4,  9,3,5,11,  11,7,8,10,  8,10,13,11,  13,11,10,13 },
-    /* ni  */ { 4,  4,3,4,13,  9,4,13,4,  13,6,8,10,  8,10,13,13 },
-    /* nu  */ { 5,  4,2,8,9,  8,9,3,11,  3,11,5,14,  5,14,12,12,  12,12,12,6 },
-    /* ne  */ { 5,  8,2,7,14,  7,5,12,3,  12,3,13,9,  13,9,8,10,  8,10,12,13 },
-    /* no  */ { 6,  5,4,11,3,  11,3,13,8,  13,8,9,14,  9,14,4,12,  4,12,6,7,  6,7,10,6 },
-    /* ha  */ { 5,  4,3,4,13,  8,4,13,4,  10,2,10,14,  10,10,13,12,  13,12,10,13 },
-    /* hi  */ { 5,  3,5,6,3,  6,3,9,8,  9,8,5,13,  5,13,12,13,  12,13,13,7 },
-    /* fu  */ { 5,  8,2,9,4,  5,5,3,9,  11,5,13,9,  4,9,11,10,  11,10,8,14 },
-    /* he  */ { 2,  3,10,8,5,  8,5,13,10 },
-    /* ho  */ { 5,  4,3,4,13,  8,4,13,4,  8,7,13,7,  10,2,10,14,  10,10,13,12 },
-    /* ma  */ { 5,  4,4,12,4,  4,7,12,7,  8,2,8,13,  8,9,5,12,  5,12,12,12 },
-    /* mi  */ { 5,  5,3,11,4,  11,4,4,8,  4,8,12,9,  12,9,6,13,  6,13,9,14 },
-    /* mu  */ { 5,  3,4,12,4,  8,2,8,12,  8,7,12,9,  12,9,8,12,  8,12,5,11 },
-    /* me  */ { 5,  5,2,9,8,  9,8,3,10,  3,10,5,14,  5,14,12,12,  12,12,9,5 },
-    /* mo  */ { 4,  9,2,9,13,  3,5,11,5,  3,9,9,9,  9,13,6,14 },
-    /* ya  */ { 4,  3,5,10,4,  10,4,5,10,  5,10,13,9,  7,2,8,14 },
-    /* yu  */ { 5,  8,2,8,14,  8,5,4,7,  4,7,4,12,  4,12,10,13,  10,13,12,8 },
-    /* yo  */ { 4,  4,4,12,4,  9,2,9,14,  9,8,5,11,  5,11,12,12 },
-    /* ra  */ { 4,  7,2,9,4,  4,6,11,6,  11,6,5,11,  5,11,12,13 },
-    /* ri  */ { 2,  5,3,5,9,  10,3,11,13 },
-    /* ru  */ { 5,  5,3,12,3,  12,3,4,8,  4,8,11,9,  11,9,5,13,  5,13,10,14 },
-    /* re  */ { 4,  8,2,7,14,  7,5,12,3,  12,3,13,13,  13,10,9,14 },
-    /* ro  */ { 4,  5,3,12,3,  12,3,4,8,  4,8,11,9,  11,9,5,13 },
-    /* wa  */ { 4,  8,2,7,14,  7,5,12,3,  12,3,13,8,  13,8,9,13 },
-    /* wo  */ { 5,  4,4,12,4,  12,4,5,8,  5,8,12,9,  12,9,5,12,  5,12,11,14 },
-    /* n   */ { 4,  4,3,8,5,  8,5,6,9,  6,9,12,11,  12,11,10,14 }
+/* Kana are real GNU Unifont characters, not hand-drawn line segments. */
+static const char *const kana_hira[KANA_COUNT] = {
+    "あ", "い", "う", "え", "お",
+    "か", "き", "く", "け", "こ",
+    "さ", "し", "す", "せ", "そ",
+    "た", "ち", "つ", "て", "と",
+    "な", "に", "ぬ", "ね", "の",
+    "は", "ひ", "ふ", "へ", "ほ",
+    "ま", "み", "む", "め", "も",
+    "や", "ゆ", "よ", "ら", "り",
+    "る", "れ", "ろ", "わ", "を",
+    "ん",
 };
 
-/* Katakana strokes, same format as hira[]. */
-static const unsigned char kata[KANA_COUNT][KANA_STRIDE] = {
-    /* a   */ { 3,  3,4,13,4,  13,4,5,13,  8,8,12,8 },
-    /* i   */ { 3,  7,2,3,10,  9,3,9,14,  3,10,9,10 },
-    /* u   */ { 5,  8,2,9,4,  4,6,12,6,  4,6,4,12,  4,12,13,12,  13,12,12,6 },
-    /* e   */ { 3,  4,4,12,4,  8,4,8,12,  3,12,13,12 },
-    /* o   */ { 3,  3,5,13,5,  9,2,9,14,  9,7,4,13 },
-    /* ka  */ { 4,  4,4,11,4,  11,4,11,9,  11,9,4,13,  8,2,6,14 },
-    /* ki  */ { 3,  3,4,13,4,  4,8,12,8,  8,2,8,14 },
-    /* ku  */ { 3,  4,3,12,4,  12,4,5,13,  10,9,12,9 },
-    /* ke  */ { 3,  4,4,13,4,  13,4,5,13,  8,8,12,8 },
-    /* ko  */ { 3,  4,4,12,4,  12,4,12,11,  4,11,12,11 },
-    /* sa  */ { 3,  3,5,13,5,  6,2,6,14,  10,2,10,13 },
-    /* shi */ { 3,  5,3,7,4,  5,8,7,9,  4,12,12,5 },
-    /* su  */ { 3,  4,4,12,4,  12,4,6,12,  6,12,12,13 },
-    /* se  */ { 3,  3,5,13,5,  6,2,6,13,  6,8,12,13 },
-    /* so  */ { 2,  6,3,8,4,  5,10,12,4 },
-    /* ta  */ { 3,  4,3,12,4,  12,4,5,13,  7,8,9,7 },
-    /* chi */ { 4,  3,4,12,4,  10,2,6,10,  4,10,13,10,  9,10,9,14 },
-    /* tsu */ { 3,  5,3,7,4,  10,3,12,4,  4,11,11,5 },
-    /* te  */ { 3,  3,4,13,4,  5,7,12,7,  9,7,8,14 },
-    /* to  */ { 2,  6,2,6,14,  6,7,11,10 },
-    /* na  */ { 2,  3,5,13,5,  10,2,9,14 },
-    /* ni  */ { 2,  4,5,12,5,  3,11,13,11 },
-    /* nu  */ { 3,  4,3,12,4,  12,4,5,13,  9,7,5,13 },
-    /* ne  */ { 5,  8,2,9,3,  4,5,12,5,  9,5,8,14,  8,9,4,12,  8,9,12,12 },
-    /* no  */ { 1,  4,3,13,13 },
-    /* ha  */ { 2,  4,4,3,13,  10,4,13,13 },
-    /* hi  */ { 3,  4,5,12,5,  6,5,6,11,  6,11,12,11 },
-    /* fu  */ { 2,  4,4,12,4,  12,4,4,13 },
-    /* he  */ { 2,  3,10,8,4,  8,4,13,10 },
-    /* ho  */ { 4,  4,5,12,5,  8,2,8,14,  8,9,4,13,  8,9,12,13 },
-    /* ma  */ { 3,  4,4,12,4,  12,4,4,10,  4,10,9,10 },
-    /* mi  */ { 3,  4,4,9,3,  5,8,10,7,  5,12,11,13 },
-    /* mu  */ { 3,  4,5,11,5,  11,5,4,13,  4,13,12,13 },
-    /* me  */ { 2,  4,3,12,13,  10,4,4,12 },
-    /* mo  */ { 4,  4,5,12,5,  4,9,11,9,  8,2,8,13,  8,13,12,13 },
-    /* ya  */ { 4,  3,5,11,5,  11,5,4,10,  4,10,12,10,  7,2,8,14 },
-    /* yu  */ { 3,  5,4,11,4,  11,4,11,10,  4,10,12,10 },
-    /* yo  */ { 4,  4,4,12,4,  4,8,11,8,  4,12,12,12,  12,4,12,12 },
-    /* ra  */ { 3,  4,3,12,3,  3,6,12,6,  12,6,5,13 },
-    /* ri  */ { 2,  5,3,5,10,  10,3,10,14 },
-    /* ru  */ { 3,  5,3,5,12,  5,12,9,14,  10,3,9,13 },
-    /* re  */ { 2,  5,3,6,12,  6,12,12,5 },
-    /* ro  */ { 4,  4,3,12,3,  12,3,12,13,  12,13,4,13,  4,13,4,3 },
-    /* wa  */ { 3,  4,4,12,4,  12,4,12,10,  12,10,4,13 },
-    /* wo  */ { 4,  4,4,12,4,  4,8,11,8,  12,4,11,8,  11,8,4,13 },
-    /* n   */ { 3,  5,4,7,5,  9,9,11,11,  4,13,13,8 }
+static const char *const kana_kata[KANA_COUNT] = {
+    "ア", "イ", "ウ", "エ", "オ",
+    "カ", "キ", "ク", "ケ", "コ",
+    "サ", "シ", "ス", "セ", "ソ",
+    "タ", "チ", "ツ", "テ", "ト",
+    "ナ", "ニ", "ヌ", "ネ", "ノ",
+    "ハ", "ヒ", "フ", "ヘ", "ホ",
+    "マ", "ミ", "ム", "メ", "モ",
+    "ヤ", "ユ", "ヨ", "ラ", "リ",
+    "ル", "レ", "ロ", "ワ", "ヲ",
+    "ン",
 };
 
 static const struct button_mapping *plugin_contexts[] = { pla_main_ctx };
@@ -213,6 +139,8 @@ static int q_best_streak;
 static int q_state;
 static int q_last_right;
 static int q_choices[4];
+
+static int kana_font = FONT_UI;
 
 static void draw_kana(int x, int y, int size, int script, int idx);
 
@@ -295,38 +223,51 @@ static void layout_init(struct layout *L, int view)
         L->glyph = 16;
 }
 
+/* Draw one kana from the loaded GNU Unifont, scaled to fit a square box.
+ * The font bitmap is column major, one bit per pixel, LSB = top row. */
 static void draw_kana(int x, int y, int size, int script, int idx)
 {
-    const unsigned char *g;
-    const unsigned char *p;
-    int n;
-    int s;
-    int x0, y0, x1, y1;
+    static unsigned char scaled[KANA_MAX_PX * ((KANA_MAX_PX + 7) / 8)];
+    const char *txt = (script == SCRIPT_KATA) ? kana_kata[idx] : kana_hira[idx];
+    struct font *pf = rb->font_get(kana_font);
+    const unsigned char *bits;
+    ucschar_t cp = 0;
+    int sw, sh, tx, ty, dm;
 
-    g = (script == SCRIPT_KATA) ? kata[idx] : hira[idx];
-    n = (int)g[0];
-    for (s = 0; s < n; s++) {
-        p = g + 1 + s * 4;
-        x0 = x + ((int)p[0] * (size - 1)) / 15;
-        y0 = y + ((int)p[1] * (size - 1)) / 15;
-        x1 = x + ((int)p[2] * (size - 1)) / 15;
-        y1 = y + ((int)p[3] * (size - 1)) / 15;
-        rb->lcd_drawline(x0, y0, x1, y1);
-        if (size >= 32) {
-            /* thicken the big quiz glyph a little */
-            rb->lcd_drawline(x0 + 1, y0, x1 + 1, y1);
-            rb->lcd_drawline(x0, y0 + 1, x1, y1 + 1);
+    if (size > KANA_MAX_PX)
+        size = KANA_MAX_PX;
+    if (size < 4 || pf == NULL)
+        return;
+    rb->utf8decode((const unsigned char *)txt, &cp);
+    bits = rb->font_get_bits(pf, cp);
+    if (bits == NULL)
+        return;
+    sw = rb->font_get_width(pf, cp);
+    sh = (int)pf->height;
+    if (sw <= 0 || sh <= 0)
+        return;
+    rb->memset(scaled, 0, (size_t)(size * ((size + 7) / 8)));
+    for (tx = 0; tx < size; tx++) {
+        int sx = tx * sw / size;
+        for (ty = 0; ty < size; ty++) {
+            int sy = ty * sh / size;
+            if (bits[(sy / 8) * sw + sx] & (1 << (sy & 7)))
+                scaled[(ty / 8) * size + tx] |= (unsigned char)(1 << (ty & 7));
         }
     }
+    dm = rb->lcd_get_drawmode();
+    rb->lcd_set_drawmode(DRMODE_FG);
+    rb->lcd_mono_bitmap_part(scaled, 0, 0, size, x, y, size, size);
+    rb->lcd_set_drawmode(dm);
 }
 
 static const char *view_name(int view)
 {
     if (view == VIEW_KATA)
-        return "KATA";
+        return "片假名";
     if (view == VIEW_BOTH)
-        return "BOTH";
-    return "HIRA";
+        return "对照";
+    return "平假名";
 }
 
 static void puts_centered(int y, const char *s)
@@ -347,8 +288,8 @@ static void draw_header(int quiz)
     int qn = QUIZ_LEN;
     const unsigned char *u;
 
-    rb->lcd_putsxy(2, 1, (const unsigned char *)(quiz ? "Kana Quiz"
-                                                      : "Kana Dojo"));
+    rb->lcd_putsxy(2, 1, (const unsigned char *)(quiz ? "假名测验"
+                                                      : "五十音道场"));
     if (quiz) {
         if (q_state != QS_DONE)
             qn = q_num + 1;
@@ -403,10 +344,10 @@ static void draw_ref_status(const struct layout *L)
     idx = (int)grid_map[sel_row][sel_col];
     rb->lcd_putsxy(3, L->status_y + 2, (const unsigned char *)romaji[idx]);
 
-    u = (const unsigned char *)"SEL:view HOLD:quiz";
+    u = (const unsigned char *)"选择:切换 长按:测验";
     rb->lcd_getstringsize(u, &w, &h);
     if (w > LCD_WIDTH - 40) {
-        u = (const unsigned char *)"SEL:vw HOLD:qz";
+        u = (const unsigned char *)"选择:切换 长按:测验";
         rb->lcd_getstringsize(u, &w, &h);
     }
     if (w < LCD_WIDTH - 24)
@@ -466,23 +407,23 @@ static void draw_quiz(void)
 
     if (q_state == QS_DONE) {
         ty = L.header_h + 6;
-        rb->snprintf(buf, sizeof(buf), "Quiz complete");
+        rb->snprintf(buf, sizeof(buf), "测验完成");
         puts_centered(ty, buf);
         ty += L.ch + 6;
-        rb->snprintf(buf, sizeof(buf), "Score %d / %d", q_score, QUIZ_LEN);
+        rb->snprintf(buf, sizeof(buf), "得分 %d / %d", q_score, QUIZ_LEN);
         puts_centered(ty, buf);
         ty += L.ch + 6;
-        rb->snprintf(buf, sizeof(buf), "Accuracy %d%%",
+        rb->snprintf(buf, sizeof(buf), "正确率 %d%%",
                      q_score * 100 / QUIZ_LEN);
         puts_centered(ty, buf);
         ty += L.ch + 6;
-        rb->snprintf(buf, sizeof(buf), "Best streak %d", q_best_streak);
+        rb->snprintf(buf, sizeof(buf), "最佳连击 %d", q_best_streak);
         puts_centered(ty, buf);
         ty += L.ch + 6;
-        rb->snprintf(buf, sizeof(buf), "Best ever %d", best_ever);
+        rb->snprintf(buf, sizeof(buf), "历史最佳 %d", best_ever);
         puts_centered(ty, buf);
         ty += L.ch + 10;
-        puts_centered(ty, "SEL:again UP:chart");
+        puts_centered(ty, "选择:再来 上:图表");
         rb->lcd_update();
         return;
     }
@@ -524,16 +465,16 @@ static void draw_quiz(void)
         if (big_y + big + 2 + h < area_y)
             rb->lcd_putsxy((LCD_WIDTH - w) / 2, big_y + big + 2,
                            (const unsigned char *)buf);
-        u = (const unsigned char *)(q_last_right ? "CORRECT!" : "WRONG");
+        u = (const unsigned char *)(q_last_right ? "正确!" : "错误");
         rb->lcd_putsxy(4, area_y, u);
-        rb->snprintf(buf, sizeof(buf), "Answer: %s", romaji[q_kana]);
+        rb->snprintf(buf, sizeof(buf), "答案: %s", romaji[q_kana]);
         rb->lcd_putsxy(4, area_y + L.ch + 3, (const unsigned char *)buf);
         rb->lcd_putsxy(4, area_y + 2 * (L.ch + 3),
-                       (const unsigned char *)"SEL: next");
+                       (const unsigned char *)"选择:下一题");
     }
 
     rb->lcd_hline(0, LCD_WIDTH - 1, L.status_y - 1);
-    rb->snprintf(buf, sizeof(buf), "Score %d  Streak %d", q_score, q_streak);
+    rb->snprintf(buf, sizeof(buf), "得分 %d  连击 %d", q_score, q_streak);
     rb->lcd_putsxy(3, L.status_y + 2, (const unsigned char *)buf);
     rb->lcd_update();
 }
@@ -762,9 +703,12 @@ static void ref_handle(int act)
 enum plugin_status plugin_start(const void *parameter)
 {
     int act;
+    int font_id;
 
     (void)parameter;
 
+    font_id = rb_cjk_load();
+    kana_font = (font_id >= 0) ? font_id : FONT_UI;
     load_best();
     rb->button_clear_queue();
     /* otherwise every session asks the same questions */
@@ -777,8 +721,10 @@ enum plugin_status plugin_start(const void *parameter)
     while (1) {
         act = pluginlib_getaction(TIMEOUT_BLOCK, plugin_contexts,
                                   ARRAYLEN(plugin_contexts));
-        if (act == PLA_EXIT || act == PLA_CANCEL)
+        if (act == PLA_EXIT || act == PLA_CANCEL) {
+            rb_cjk_unload(font_id);
             return PLUGIN_OK;
+        }
 
         if (quiz_active)
             quiz_handle(act);

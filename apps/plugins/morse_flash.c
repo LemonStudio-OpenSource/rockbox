@@ -14,6 +14,7 @@
  ***************************************************************************/
 #include "plugin.h"
 #include "lib/pluginlib_actions.h"
+#include "lib/cjk_font.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -124,6 +125,9 @@ static int mf_wrap(int x, int y, int maxw, int maxlines, const char *s, int lh)
         else if (last > 0) len = last;
         else len = (n > 0) ? n : 1;
         if (len > (int)sizeof line - 1) len = (int)sizeof line - 1;
+        /* never split a UTF-8 sequence at the wrap point */
+        while (len > 0 && ((unsigned char)s[len] & 0xC0) == 0x80)
+            len--;
         rb->memcpy(line, s, (size_t)len);
         line[len] = '\0';
         rb->lcd_putsxy(x, y, (const unsigned char *)line);
@@ -210,16 +214,16 @@ static void mf_draw_tx(int playing, int speed, const struct mf_tape *tape, const
     int footer_y = LCD_HEIGHT - lh - 2;
     int y;
     rb->lcd_clear_display();
-    mf_center(2, "MORSE FLASH");
+    mf_center(2, "摩尔斯电码");
     y = 2 + lh + 2;
-    if (playing) mf_put(2, y, "SENDING");
+    if (playing) mf_put(2, y, "发报中");
     else {
-        rb->snprintf(buf, sizeof buf, "SPEED %d ms  < >", mf_speed[speed]);
+        rb->snprintf(buf, sizeof buf, "速度 %d 毫秒  < >", mf_speed[speed]);
         mf_put(2, y, buf);
     }
     y += lh + 2;
-    if (mf_msg_len > 0) rb->snprintf(buf, sizeof buf, "MSG: %s", mf_msg);
-    else rb->strlcpy(buf, "MSG: (empty)", sizeof buf);
+    if (mf_msg_len > 0) rb->snprintf(buf, sizeof buf, "电文: %s", mf_msg);
+    else rb->strlcpy(buf, "电文: (空)", sizeof buf);
     y = mf_wrap(2, y, LCD_WIDTH - 4, 2, buf, lh);
     mf_draw_tape(tape, y + 3, footer_y - 2);
     mf_put(2, footer_y, footer);
@@ -235,7 +239,7 @@ static int mf_send(const char *msg, int unit_ms, struct mf_tape *tape)
         if (code == NULL) continue;
         if (msg[i] == ' ') {
             mf_tape_push(tape, MF_WORD);
-            mf_draw_tx(1, 0, tape, "EXIT STOPS");
+            mf_draw_tx(1, 0, tape, "退出停止");
             if (mf_wait(*rb->current_tick + 6 * tu) < 0) return -1;
             continue;
         }
@@ -247,13 +251,13 @@ static int mf_send(const char *msg, int unit_ms, struct mf_tape *tape)
             mf_flash(true);
             if (mf_wait(t0 + units * tu) < 0) { mf_flash(false); return -1; }
             mf_flash(false);
-            mf_draw_tx(1, 0, tape, "EXIT STOPS");
+            mf_draw_tx(1, 0, tape, "退出停止");
             if (mf_wait(t0 + (units + 1) * tu) < 0) return -1;
         }
         /* The element gap is spent; two more units complete the letter gap. */
         if (msg[i + 1] != '\0' && msg[i + 1] != ' ') {
             mf_tape_push(tape, MF_LETTER);
-            mf_draw_tx(1, 0, tape, "EXIT STOPS");
+            mf_draw_tx(1, 0, tape, "退出停止");
             if (mf_wait(*rb->current_tick + 2 * tu) < 0) return -1;
         }
     }
@@ -268,10 +272,10 @@ static int transmit_view(void)
         const char *footer;
         int a;
         switch (result) {
-            case 1:  footer = "SENT!  SEL AGAIN"; break;
-            case 2:  footer = "ABORTED";          break;
-            case 3:  footer = "MSG IS EMPTY";     break;
-            default: footer = "SEL TX  EXIT MENU"; break;
+            case 1:  footer = "已发送! 再按选择"; break;
+            case 2:  footer = "已中止";          break;
+            case 3:  footer = "电文为空";     break;
+            default: footer = "选择发报 退出菜单"; break;
         }
         mf_draw_tx(0, speed, &tape, footer);
         a = pluginlib_getaction(TIMEOUT_BLOCK, plugin_contexts,
@@ -297,8 +301,8 @@ static int mf_cols(void)
 { return (LCD_WIDTH >= 280) ? 8 : 5; }
 static void mf_label(int item, char *out, int outsz)
 {
-    if (item == MF_PICK_COUNT - 1) rb->strlcpy(out, "DEL", outsz);
-    else if (mf_picker[item] == ' ') rb->strlcpy(out, "SPC", outsz);
+    if (item == MF_PICK_COUNT - 1) rb->strlcpy(out, "删", outsz);
+    else if (mf_picker[item] == ' ') rb->strlcpy(out, "空", outsz);
     else { out[0] = mf_picker[item]; out[1] = '\0'; }
 }
 static void mf_backspace(void)
@@ -326,13 +330,13 @@ static void mf_draw_encode(int sel)
     int cell_h = lh + 2;
     int max_rows, sel_row, row_off, y, r, c;
     rb->lcd_clear_display();
-    mf_center(2, "MORSE FLASH");
+    mf_center(2, "摩尔斯电码");
     y = 2 + lh + 2;
-    if (mf_msg_len > 0) rb->snprintf(buf, sizeof buf, "MSG: %s", mf_msg);
-    else rb->strlcpy(buf, "MSG: (empty)", sizeof buf);
+    if (mf_msg_len > 0) rb->snprintf(buf, sizeof buf, "电文: %s", mf_msg);
+    else rb->strlcpy(buf, "电文: (空)", sizeof buf);
     y = mf_wrap(2, y, LCD_WIDTH - 4, 2, buf, lh) + 2;
     mf_build_morse(mf_msg, mf_morse, (int)sizeof mf_morse);
-    rb->snprintf(mbuf, sizeof mbuf, "MORSE: %s", mf_morse);
+    rb->snprintf(mbuf, sizeof mbuf, "摩尔斯: %s", mf_morse);
     y = mf_wrap(2, y, LCD_WIDTH - 4, 4, mbuf, lh) + 4;
     max_rows = (footer_y - y - 2) / cell_h;
     if (max_rows < 1) max_rows = 1;
@@ -355,7 +359,7 @@ static void mf_draw_encode(int sel)
                 rb->lcd_drawrect(x + 1, cy, cell_w - 2, cell_h - 1);
         }
     }
-    mf_put(2, footer_y, "SEL ADD  CAN DEL");
+    mf_put(2, footer_y, "选择:添加 返回:删除");
     rb->lcd_update();
 }
 static int encode_view(void)
@@ -429,16 +433,16 @@ static void mf_draw_drill(int q, int score, int streak, const char cand[4],
     int box_h = lh + 8;
     int y, by, i;
     rb->lcd_clear_display();
-    mf_center(2, "MORSE DRILL");
+    mf_center(2, "摩尔斯听辨");
     y = 2 + lh + 2;
-    rb->snprintf(buf, sizeof buf, "Q %d/%d   SCORE %d", q + 1, MF_QUESTIONS, score);
+    rb->snprintf(buf, sizeof buf, "第 %d/%d 题  得分 %d", q + 1, MF_QUESTIONS, score);
     mf_put(2, y, buf);
     y += lh;
-    rb->snprintf(buf, sizeof buf, "STREAK %d", streak);
+    rb->snprintf(buf, sizeof buf, "连击 %d", streak);
     mf_put(2, y, buf);
     y += lh + 4;
-    if (answered) mf_put(2, y, correct ? "CORRECT!" : "WRONG!");
-    else mf_put(2, y, "WHAT DID YOU HEAR?");
+    if (answered) mf_put(2, y, correct ? "正确!" : "错误!");
+    else mf_put(2, y, "你听到了什么?");
     by = y + lh + 10;
     if (by + box_h > footer_y - lh - 4) by = footer_y - lh - 4 - box_h;
     if (by < y + lh) by = y + lh;
@@ -451,10 +455,10 @@ static void mf_draw_drill(int q, int score, int streak, const char cand[4],
         if (i == sel) rb->lcd_drawrect(x + 2, by, box_w - 4, box_h);
     }
     if (answered && !correct) {
-        rb->snprintf(buf, sizeof buf, "IT WAS %c", target);
+        rb->snprintf(buf, sizeof buf, "答案是 %c", target);
         mf_put(2, by + box_h + 4, buf);
-    } else if (!answered) mf_put(2, by + box_h + 4, "L/R PICK  SEL OK");
-    mf_put(2, footer_y, answered ? "NEXT..." : "UP REPLAY  EXIT");
+    } else if (!answered) mf_put(2, by + box_h + 4, "左右选择 选择确认");
+    mf_put(2, footer_y, answered ? "下一题..." : "上:重播 退出");
     rb->lcd_update();
 }
 static void mf_summary(int score, int best)
@@ -463,16 +467,16 @@ static void mf_summary(int score, int best)
     int lh = mf_lh();
     int y;
     rb->lcd_clear_display();
-    mf_center(2, "ROUND OVER");
+    mf_center(2, "本轮结束");
     y = 2 + lh * 3;
-    rb->snprintf(buf, sizeof buf, "SCORE %d / %d", score, MF_QUESTIONS);
+    rb->snprintf(buf, sizeof buf, "得分 %d / %d", score, MF_QUESTIONS);
     mf_center(y, buf);
     y += lh + 2;
-    rb->snprintf(buf, sizeof buf, "BEST STREAK %d", best);
+    rb->snprintf(buf, sizeof buf, "最佳连击 %d", best);
     mf_center(y, buf);
     y += lh + 2;
-    mf_center(y, (score == MF_QUESTIONS) ? "PERFECT!" : "KEEP PRACTISING");
-    mf_center(LCD_HEIGHT - lh - 2, "SEL MENU");
+    mf_center(y, (score == MF_QUESTIONS) ? "完美!" : "继续练习");
+    mf_center(LCD_HEIGHT - lh - 2, "选择:菜单");
     rb->lcd_update();
 }
 static int drill_view(void)
@@ -525,14 +529,14 @@ static int drill_view(void)
 }
 static void mf_draw_menu(int sel)
 {
-    static const char *items[] = { "ENCODE", "TRANSMIT", "DRILL", "QUIT" };
+    static const char *items[] = { "编码", "发报", "听辨", "退出" };
     int lh = mf_lh();
     int item_h = lh + 6;
     int total = (int)ARRAYLEN(items) * item_h;
     int y0 = (LCD_HEIGHT - total) / 2;
     int i;
     rb->lcd_clear_display();
-    mf_center(2, "MORSE FLASH");
+    mf_center(2, "摩尔斯电码");
     for (i = 0; i < (int)ARRAYLEN(items); i++) {
         int ty = y0 + i * item_h;
         int tw = mf_width(items[i]);
@@ -542,7 +546,7 @@ static void mf_draw_menu(int sel)
         if (i == sel && tx > 6 && tw + 12 < LCD_WIDTH)
             rb->lcd_drawrect(tx - 6, ty - 2, tw + 12, lh + 4);
     }
-    mf_put(2, LCD_HEIGHT - lh - 2, "UP/DOWN SEL EXIT");
+    mf_put(2, LCD_HEIGHT - lh - 2, "上下选择 退出");
     rb->lcd_update();
 }
 static int menu_view(void)
@@ -573,12 +577,14 @@ static int menu_view(void)
 enum plugin_status plugin_start(const void *parameter)
 {
     enum mf_view view = MF_MENU;
+    int font_id;
     (void)parameter;
 #if LCD_DEPTH > 1
     rb->lcd_set_foreground(LCD_DEFAULT_FG);
     rb->lcd_set_background(LCD_DEFAULT_BG);
 #endif
     rb->lcd_set_drawmode(DRMODE_SOLID);
+    font_id = rb_cjk_load();
     rb->srand((unsigned int)*rb->current_tick);
     while (view != MF_QUIT) {
         switch (view) {
@@ -591,5 +597,6 @@ enum plugin_status plugin_start(const void *parameter)
     rb->lcd_clear_display();
     rb->lcd_update();
     mf_backlight();
+    rb_cjk_unload(font_id);
     return PLUGIN_OK;
 }

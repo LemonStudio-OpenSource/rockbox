@@ -150,8 +150,8 @@
 #define IHIFI_800_PAD      68
 #define XDUOO_X3II_PAD     69
 #define XDUOO_X20_PAD      70
-#define FIIO_M3K_LINUX_PAD 71
 #define EROSQ_PAD          72
+// 71 can be reused
 #define FIIO_M3K_PAD       73
 #define SHANLING_Q1_PAD    74
 #define ECHO_R1_PAD        75
@@ -278,6 +278,7 @@
 #define LCD_EROSQ         71 /* as used by the ErosQ (native) */
 #define LCD_ECHO_R1       72 /* ILI9342, as used by the Echo R1 */
 #define LCD_AGPTEK_ROCKER 73 /* ST7735S, as used by the Agptek Rocker (native) */
+#define LCD_HIBY_R1       74 /* as used by the HiBy R1 (native) */
 
 /* LCD_PIXELFORMAT */
 #define HORIZONTAL_PACKING 1
@@ -572,8 +573,6 @@ Lyre prototype 1 */
 #include "config/xduoox3ii.h"
 #elif defined(XDUOO_X20)
 #include "config/xduoox20.h"
-#elif defined(FIIO_M3K_LINUX)
-#include "config/fiiom3klinux.h"
 #elif defined(FIIO_M3K)
 #include "config/fiiom3k.h"
 #elif defined(EROS_Q)
@@ -600,6 +599,8 @@ Lyre prototype 1 */
 #include "config/hidizsap80max.h"
 #elif defined(SONY_PSP)
 #include "config/sonypsp.h"
+#elif defined(HIBY_R1_NATIVE)
+#include "config/hibyr1native.h"
 #else
 #error "unknown hardware platform!"
 #endif
@@ -915,6 +916,12 @@ Lyre prototype 1 */
     && (CONFIG_NAND == NAND_RK27XX) \
     && (CONFIG_RK27XX_FTL == RK27XX_FTL_SCHEME_A) \
     && !defined(HAVE_STORAGE_FLUSH)
+#define HAVE_STORAGE_FLUSH
+#endif
+
+/* ATA drives may cache writes, so flush them before power may be cut: on
+ * USB eject, at shutdown and on ROLO. */
+#if (CONFIG_STORAGE & STORAGE_ATA) && !defined(HAVE_STORAGE_FLUSH)
 #define HAVE_STORAGE_FLUSH
 #endif
 

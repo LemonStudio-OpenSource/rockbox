@@ -438,8 +438,7 @@ static void draw_calendar_view(void)
 
     for (col = 0; col < 7; col++)
     {
-        const char *name = (cell_w >= 20) ? weekday_names[col]
-                                          : weekday_short[col];
+        const char *name = weekday_names[cell_w >= 20 ? 0 : 1][col];
         tw = text_width(name);
         put_text(grid_x + col * cell_w + (cell_w - tw) / 2,
                  1 + 3 * fh, name);

@@ -86,6 +86,11 @@ struct preferences {
     bool display_time;
     bool backlight_on;
     bool show_map; /* draw the lyric map strip under the lyrics */
+    int  map_height;      /* lyric map strip height in pixels */
+    int  line_spacing;    /* extra pixels between lyric lines */
+    bool highlight_active;/* draw a band behind the current line */
+    bool show_progress;   /* draw the progress bar under the time */
+    bool time_countdown;  /* show remaining instead of elapsed time */
 
     /* file settings */
     char lrc_directory[64];
@@ -136,6 +141,10 @@ static char temp_buf[MAX(MAX_LINE_LEN,MAX_PATH)];
 static char utf8line[MAX_LINE_LEN*4];
 static int uifont = -1;
 static int font_ui_height = 1;
+static int line_height = 1;
+static int lrc_cjk_font = -1;
+static struct viewport menu_vp[NB_SCREENS];
+static int lrc_do_menu(const struct menu_item_ex *menu, int *selected);
 static struct viewport vp_info[NB_SCREENS];
 static struct viewport vp_lyrics[NB_SCREENS];
 
@@ -152,6 +161,7 @@ static struct viewport vp_lyrics[NB_SCREENS];
 #define LST_SET_HOUR    0x00080000
 
 #include "lib/pluginlib_actions.h"
+#include "lib/cjk_font.h"
 #define LST_SET_TIME    (LST_SET_MSEC|LST_SET_SEC|LST_SET_MIN|LST_SET_HOUR)
 #define LST_OFF_Y 1
 static int lrc_set_time(const char *title, const char *unit, long *pval,
@@ -274,7 +284,7 @@ static int lrc_set_time(const char *title, const char *unit, long *pval,
                 break;
             case PLA_CANCEL:
             case PLA_EXIT:
-                rb->splash(HZ, "Cancelled");
+                rb->splash(HZ, "已取消");
                 ret = -1;
                 break;
             default:
@@ -1594,13 +1604,13 @@ static void display_state(void)
     const char *str = NULL;
 
     if (AUDIO_STOP)
-        str = "Audio Stopped";
+        str = "播放已停止";
     else if (current.found_lrc)
     {
         if (!current.loaded_lrc)
-            str = "Loading lrc";
+            str = "正在加载歌词";
         else if (!current.ll_head)
-            str = "No lyrics";
+            str = "无歌词";
     }
 
     const char *info = NULL;
@@ -1620,7 +1630,7 @@ static void display_state(void)
         else if (current.mp3_file[0] == '/')
             info = rb->strrchr(current.mp3_file, '/')+1;
         else
-            info = "(no info)";
+            info = "(无信息)";
     }
 
     int w, h;
@@ -1632,17 +1642,24 @@ static void display_state(void)
         display->clear_viewport();
         if (info)
             display->puts_scroll(0, 0, info);
+        if (info || str)
+        {
+            int hy = (prefs.display_title ? line_height : 0) +
+                     (prefs.display_time ? SYSFONT_HEIGHT * 2 : 0);
+            if (hy > 0 && hy <= vp_info[i].height)
+                display->hline(0, vp_info[i].width - 1, hy - 1);
+        }
         if (str)
         {
             display->set_viewport(&vp_lyrics[i]);
             display->clear_viewport();
             display->getstringsize(str, &w, &h);
             if (vp_lyrics[i].width - w < 0)
-                display->puts_scroll(0, vp_lyrics[i].height/font_ui_height/2,
+                display->puts_scroll(0, vp_lyrics[i].height/line_height/2,
                                      str);
             else
                 display->putsxy((vp_lyrics[i].width - w)*prefs.align/2,
-                                (vp_lyrics[i].height-font_ui_height)/2, str);
+                                (vp_lyrics[i].height-line_height)/2, str);
             display->set_viewport(&vp_info[i]);
         }
         display->update_viewport();
@@ -1652,20 +1669,27 @@ static void display_state(void)
 
 static void display_time(void)
 {
-    rb->snprintf(temp_buf, MAX_LINE_LEN, "%ld:%02ld/%ld:%02ld",
-                            current.elapsed/60000, (current.elapsed/1000)%60,
+    long shown = current.elapsed;
+    if (prefs.time_countdown && current.length > current.elapsed)
+        shown = current.length - current.elapsed;
+    rb->snprintf(temp_buf, MAX_LINE_LEN, "%s%ld:%02ld/%ld:%02ld",
+                            prefs.time_countdown ? "-" : "",
+                            shown/60000, (shown/1000)%60,
                             current.length/60000, (current.length)/1000%60);
-    int y = (prefs.display_title? font_ui_height:0);
+    int y = (prefs.display_title? line_height:0);
     FOR_NB_SCREENS(i)
     {
         struct screen* display = rb->screens[i];
         display->set_viewport(&vp_info[i]);
         display->setfont(FONT_SYSFIXED);
         display->putsxy(0, y, temp_buf);
-        rb->gui_scrollbar_draw(display, 0, y+SYSFONT_HEIGHT+1,
-                               vp_info[i].width, SYSFONT_HEIGHT-2,
-                               current.length, 0, current.elapsed, HORIZONTAL);
-        display->update_viewport_rect(0, y, vp_info[i].width, SYSFONT_HEIGHT*2);
+        if (prefs.show_progress)
+            rb->gui_scrollbar_draw(display, 0, y+SYSFONT_HEIGHT+1,
+                                   vp_info[i].width, SYSFONT_HEIGHT-2,
+                                   current.length, 0, current.elapsed,
+                                   HORIZONTAL);
+        display->update_viewport_rect(0, y, vp_info[i].width,
+                                      SYSFONT_HEIGHT * (prefs.show_progress ? 2 : 1));
         display->setfont(uifont);
         display->set_viewport(NULL);
     }
@@ -1749,9 +1773,17 @@ static int display_lrc_line(struct lrc_line *lrc_line, int ypos, int i)
                               elapsed-1, font_ui_height/2-2);
             set_to_default(display);
         }
-        return ypos + font_ui_height;
+        return ypos + line_height;
     }
 
+#if LCD_DEPTH > 1
+    if (prefs.highlight_active && active_line)
+    {
+        display->set_foreground(LCD_DARKGRAY);
+        display->set_drawmode(DRMODE_SOLID);
+        display->fillrect(0, ypos, vp_lyrics[i].width, line_height);
+    }
+#endif
     lrc_brpos = calc_brpos(lrc_line, i);
     /* initialize line */
     xpos = (vp_lyrics[i].width - lrc_brpos->width)*prefs.align/2;
@@ -1844,7 +1876,7 @@ static int display_lrc_line(struct lrc_line *lrc_line, int ypos, int i)
                 lrc_brpos++;
                 str = lrc_skip_space(str);
                 xpos = (vp_lyrics[i].width - lrc_brpos->width)*prefs.align/2;
-                ypos += font_ui_height;
+                ypos += line_height;
                 count = 0;
                 width = 0;
             }
@@ -1864,7 +1896,7 @@ static int display_lrc_line(struct lrc_line *lrc_line, int ypos, int i)
  * It shows at a glance whether the lyrics cover the whole song (or
  * only a part of it) and how far the song has progressed.
  *******************************/
-#define LRC_MAP_HEIGHT 4
+/* map height is a live setting (prefs.map_height) */
 
 /* map a time (msec) onto an x position of the map; the division is done
  * first so that a long song can never overflow the multiplication */
@@ -1893,10 +1925,10 @@ static void draw_lyric_map(struct lrc_line *lrc_center, int i)
         return;
 
     width = vp_lyrics[i].width;
-    if (width <= 1 || vp_lyrics[i].height < LRC_MAP_HEIGHT + font_ui_height)
+    if (width <= 1 || vp_lyrics[i].height < prefs.map_height + line_height)
         return;
 
-    y0 = vp_lyrics[i].height - LRC_MAP_HEIGHT;
+    y0 = vp_lyrics[i].height - prefs.map_height;
 
     /* base line of the timeline */
     set_to_inactive(display);
@@ -1909,20 +1941,20 @@ static void draw_lyric_map(struct lrc_line *lrc_center, int i)
         if (x == last_x)
             continue;
         last_x = x;
-        display->vline(x, y0+1, y0+LRC_MAP_HEIGHT-1);
+        display->vline(x, y0+1, y0+prefs.map_height-1);
     }
 
     /* played part of the song */
     progress = lyric_map_x(current.elapsed, width);
     set_to_active(display);
     if (progress > 0)
-        display->fillrect(0, y0+2, progress, LRC_MAP_HEIGHT-2);
+        display->fillrect(0, y0+2, progress, prefs.map_height-2);
 
     /* marker of the line that is currently sung */
     if (lrc_center)
     {
         x = lyric_map_x(get_time_start(lrc_center), width);
-        display->vline(x, y0, y0+LRC_MAP_HEIGHT-1);
+        display->vline(x, y0, y0+prefs.map_height-1);
     }
 
     set_to_default(display);
@@ -1964,21 +1996,23 @@ static void display_lrcs(void)
         display->clear_viewport();
 
         struct lrc_line *lrc_line;
-        int y, ypos = 0, nblines = vp_lyrics[i].height/font_ui_height;
+        int y, ypos = 0, nblines = vp_lyrics[i].height/line_height;
+        if (nblines < 1)
+            nblines = 1;
         y = (nblines-1)/2;
         if (rin < 0)
         {
             /* time_elapsed < time of first lrc */
             if (!current.wipe)
                 ypos = (time_start - time_elapsed)
-                            * font_ui_height / time_start;
+                            * line_height / time_start;
             else
                 y++;
         }
         else if (len > 0)
         {
             if (!current.wipe)
-                ypos = - rin * lrc_center->nline[i] * font_ui_height / len;
+                ypos = - rin * lrc_center->nline[i] * line_height / len;
             else
             {
                 long elapsed = rin * lrc_center->width / len;
@@ -2001,7 +2035,7 @@ static void display_lrcs(void)
             lrc_line = lrc_line->next;
         }
 
-        ypos += y*font_ui_height;
+        ypos += y*line_height;
         while (lrc_line && ypos < vp_lyrics[i].height)
         {
             ypos = display_lrc_line(lrc_line, ypos, i);
@@ -2009,7 +2043,7 @@ static void display_lrcs(void)
         }
         if (!lrc_line && ypos < vp_lyrics[i].height && prefs.autoscroll)
             display->putsxy(0, ypos, current.truncated?
-                                        "[end - lyrics truncated]": "[end]");
+                                        "[歌词已截断]": "[完]");
 
         draw_lyric_map(lrc_center, i);
 
@@ -2058,7 +2092,7 @@ static void save_changes(void)
     int fd, fe;
     if (!current.changed_lrc)
         return;
-    rb->splash(HZ/2, "Saving changes...");
+    rb->splash(HZ/2, "正在保存歌词...");
     if (current.type == TXT || current.type > NUM_TYPES)
     {
         /* save changes to new .lrc file */
@@ -2182,7 +2216,7 @@ static void save_changes(void)
     else
     {
         rb->remove(new_file);
-        rb->splash(HZ, "Could not save changes.");
+        rb->splash(HZ, "歌词保存失败");
     }
     rb->reload_directory();
     current.changed_lrc = false;
@@ -2196,7 +2230,7 @@ static int timetag_editor(void)
 
     if (current.id3 == NULL || !current.ll_head)
     {
-        rb->splash(HZ, "No lyrics");
+        rb->splash(HZ, "无歌词");
         return LRC_GOTO_MAIN;
     }
 
@@ -2215,7 +2249,7 @@ static int timetag_editor(void)
     rb->gui_synclist_init(&gui_editor, &get_lrc_timeline, NULL, false, 1, NULL);
     rb->gui_synclist_set_nb_items(&gui_editor, current.nlrcline);
     rb->gui_synclist_set_icon_callback(&gui_editor, get_icon);
-    rb->gui_synclist_set_title(&gui_editor, "Timetag Editor",
+    rb->gui_synclist_set_title(&gui_editor, "时间标签编辑",
                                Icon_Menu_functioncall);
     rb->gui_synclist_select_item(&gui_editor, selected);
     rb->gui_synclist_draw(&gui_editor);
@@ -2267,13 +2301,13 @@ static int timetag_editor(void)
 
     if (current.changed_lrc)
     {
-        MENUITEM_STRINGLIST(save_menu, "Save Changes?", NULL,
-                            "Yes", "No (save later)", "Discard All Changes")
+        MENUITEM_STRINGLIST(save_menu, "保存修改?", NULL,
+                            "是", "否（稍后保存）", "放弃所有修改")
         button = 0;
         exit = false;
         while (!exit)
         {
-            switch (rb->do_menu(&save_menu, &button, NULL, false))
+            switch (lrc_do_menu(&save_menu, &button))
             {
                 case 0:
                     sort_lrcs();
@@ -2299,6 +2333,16 @@ static int timetag_editor(void)
 /*******************************
  * Settings.
  *******************************/
+static int lrc_do_menu(const struct menu_item_ex *menu, int *selected)
+{
+    FOR_NB_SCREENS(i)
+    {
+        rb->viewport_set_defaults(&menu_vp[i], i);
+        menu_vp[i].font = uifont;
+    }
+    return rb->do_menu(menu, selected, menu_vp, false);
+}
+
 static void load_or_save_settings(bool save)
 {
     static const char config_file[] = "lrcplayer.cfg";
@@ -2323,6 +2367,19 @@ static void load_or_save_settings(bool save)
             "backlight on", NULL },
         { TYPE_BOOL, 0, 1, { .bool_p = &prefs.show_map },
             "show lyric map", NULL },
+        { TYPE_INT,  2, 8, { .int_p = &prefs.map_height }, "map height", NULL },
+        { TYPE_INT,  0, 8, { .int_p = &prefs.line_spacing },
+            "line spacing", NULL },
+        { TYPE_BOOL, 0, 1, { .bool_p = &prefs.highlight_active },
+            "highlight active", NULL },
+        { TYPE_BOOL, 0, 1, { .bool_p = &prefs.show_progress },
+            "show progress", NULL },
+        { TYPE_BOOL, 0, 1, { .bool_p = &prefs.time_countdown },
+            "countdown", NULL },
+#ifdef HAVE_LCD_COLOR
+        { TYPE_INT, 0, 0xffffff, { .int_p = &prefs.active_color },
+            "active color", NULL },
+#endif
 
         { TYPE_STRING, 0, sizeof(prefs.lrc_directory),
             { .string = prefs.lrc_directory }, "lrc directory", NULL },
@@ -2350,6 +2407,11 @@ static void load_or_save_settings(bool save)
         prefs.display_time = true;
         prefs.backlight_on = false;
         prefs.show_map = true;
+        prefs.map_height = 4;
+        prefs.line_spacing = 0;
+        prefs.highlight_active = false;
+        prefs.show_progress = true;
+        prefs.time_countdown = false;
 #ifdef LRC_SUPPORT_ID3
         prefs.read_id3 = true;
 #endif
@@ -2360,10 +2422,15 @@ static void load_or_save_settings(bool save)
     }
     else if (rb->memcmp(&old_prefs, &prefs, sizeof(prefs)))
     {
-        rb->splash(0, "Saving Settings");
+        rb->splash(0, "正在保存设置");
         configfile_save(config_file, config, ARRAYLEN(config), 0);
     }
     rb->memcpy(&old_prefs, &prefs, sizeof(prefs));
+}
+
+static bool lrc_bool(const char *title, bool *value)
+{
+    return rb->set_bool_options(title, value, "是", -1, "否", -1, NULL);
 }
 
 static bool lrc_theme_menu(void)
@@ -2373,7 +2440,9 @@ static bool lrc_theme_menu(void)
         LRC_MENU_DISP_TITLE,
         LRC_MENU_DISP_TIME,
         LRC_MENU_SHOW_MAP,
+        LRC_MENU_MAP_HEIGHT,
 #ifdef HAVE_LCD_COLOR
+        LRC_MENU_ACTIVE_COLOR,
         LRC_MENU_INACTIVE_COLOR,
 #endif
         LRC_MENU_BACKLIGHT,
@@ -2382,39 +2451,50 @@ static bool lrc_theme_menu(void)
     int selected = 0;
     bool exit = false, usb = false;
 
-    MENUITEM_STRINGLIST(menu, "Theme Settings", NULL,
-                        "Show Statusbar", "Display Title",
-                        "Display Time",
-                        "Show Lyric Map",
+    MENUITEM_STRINGLIST(menu, "主题设置", NULL,
+                        "显示状态栏", "显示标题",
+                        "显示时间",
+                        "显示歌词地图",
+                        "地图高度",
 #ifdef HAVE_LCD_COLOR
-                        "Inactive Colour",
+                        "当前句颜色",
+                        "非当前句颜色",
 #endif
-                        "Backlight Always On");
+                        "背光常亮");
 
     while (!exit && !usb)
     {
-        switch (rb->do_menu(&menu, &selected, NULL, false))
+        switch (lrc_do_menu(&menu, &selected))
         {
             case LRC_MENU_STATUSBAR:
-                usb = rb->set_bool("Show Statusbar", &prefs.statusbar_on);
+                usb = lrc_bool("显示状态栏", &prefs.statusbar_on);
                 break;
             case LRC_MENU_DISP_TITLE:
-                usb = rb->set_bool("Display Title", &prefs.display_title);
+                usb = lrc_bool("显示标题", &prefs.display_title);
                 break;
             case LRC_MENU_DISP_TIME:
-                usb = rb->set_bool("Display Time", &prefs.display_time);
+                usb = lrc_bool("显示时间", &prefs.display_time);
                 break;
             case LRC_MENU_SHOW_MAP:
-                usb = rb->set_bool("Show Lyric Map", &prefs.show_map);
+                usb = lrc_bool("显示歌词地图", &prefs.show_map);
+                break;
+            case LRC_MENU_MAP_HEIGHT:
+                usb = rb->set_int((const unsigned char *)"地图高度", "像素",
+                                  -1, &prefs.map_height,
+                                  1, 2, 8, NULL);
                 break;
 #ifdef HAVE_LCD_COLOR
+            case LRC_MENU_ACTIVE_COLOR:
+                usb = rb->set_color(NULL, "当前句颜色",
+                                    &prefs.active_color, -1);
+                break;
             case LRC_MENU_INACTIVE_COLOR:
-                usb = rb->set_color(NULL, "Inactive Colour",
+                usb = rb->set_color(NULL, "非当前句颜色",
                                     &prefs.inactive_color, -1);
                 break;
 #endif
             case LRC_MENU_BACKLIGHT:
-                usb = rb->set_bool("Backlight Always On", &prefs.backlight_on);
+                usb = lrc_bool("背光常亮", &prefs.backlight_on);
                 break;
             case MENU_ATTACHED_USB:
                 usb = true;
@@ -2436,40 +2516,61 @@ static bool lrc_display_menu(void)
         LRC_MENU_ALIGN,
         LRC_MENU_LINE_MODE,
         LRC_MENU_SCROLL_MODE,
+        LRC_MENU_SPACING,
+        LRC_MENU_HIGHLIGHT,
+        LRC_MENU_PROGRESS,
+        LRC_MENU_COUNTDOWN,
     };
 
     int selected = 0;
     bool exit = false, usb = false;
 
-    MENUITEM_STRINGLIST(menu, "Display Settings", NULL,
-                        "Wrap", "Wipe", "Alignment",
-                        "Activate Only Current Line",
-                        "Automatic Scrolling");
+    MENUITEM_STRINGLIST(menu, "显示设置", NULL,
+                        "自动换行", "逐字擦除", "对齐方式",
+                        "仅当前句高亮",
+                        "自动滚动", "行间距",
+                        "高亮当前句", "显示进度条",
+                        "时间倒计时");
 
     struct opt_items align_names[] = {
-        {"Left", -1}, {"Centre", -1}, {"Right", -1},
+        {"左对齐", -1}, {"居中", -1}, {"右对齐", -1},
     };
 
     while (!exit && !usb)
     {
-        switch (rb->do_menu(&menu, &selected, NULL, false))
+        switch (lrc_do_menu(&menu, &selected))
         {
             case LRC_MENU_WRAP:
-                usb = rb->set_bool("Wrap", &prefs.wrap);
+                usb = lrc_bool("自动换行", &prefs.wrap);
                 break;
             case LRC_MENU_WIPE:
-                usb = rb->set_bool("Wipe", &prefs.wipe);
+                usb = lrc_bool("逐字擦除", &prefs.wipe);
                 break;
             case LRC_MENU_ALIGN:
-                usb = rb->set_option("Alignment", &prefs.align, RB_INT,
+                usb = rb->set_option("对齐方式", &prefs.align, RB_INT,
                                      align_names, 3, NULL);
                 break;
             case LRC_MENU_LINE_MODE:
-                usb = rb->set_bool("Activate Only Current Line",
+                usb = lrc_bool("仅当前句高亮",
                                         &prefs.active_one_line);
                 break;
             case LRC_MENU_SCROLL_MODE:
-                usb = rb->set_bool("Automatic Scrolling", &prefs.autoscroll);
+                usb = lrc_bool("自动滚动", &prefs.autoscroll);
+                break;
+            case LRC_MENU_SPACING:
+                usb = rb->set_int((const unsigned char *)"行间距", "像素",
+                                  -1, &prefs.line_spacing,
+                                  1, 0, 8, NULL);
+                line_height = font_ui_height + prefs.line_spacing;
+                break;
+            case LRC_MENU_HIGHLIGHT:
+                usb = lrc_bool("高亮当前句", &prefs.highlight_active);
+                break;
+            case LRC_MENU_PROGRESS:
+                usb = lrc_bool("显示进度条", &prefs.show_progress);
+                break;
+            case LRC_MENU_COUNTDOWN:
+                usb = lrc_bool("时间倒计时", &prefs.time_countdown);
                 break;
             case MENU_ATTACHED_USB:
                 usb = true;
@@ -2499,14 +2600,14 @@ static bool lrc_lyrics_menu(void)
     struct opt_items cp_names[NUM_CODEPAGES+1];
     int old_val;
 
-    MENUITEM_STRINGLIST(menu, "Lyrics Settings", NULL,
-                        "Encoding",
+    MENUITEM_STRINGLIST(menu, "歌词设置", NULL,
+                        "编码",
 #ifdef LRC_SUPPORT_ID3
-                        "Read ID3 tag",
+                        "读取 ID3 标签",
 #endif
-                        "Lrc Directry");
+                        "歌词目录");
 
-    cp_names[0].string = "Use default codepage";
+    cp_names[0].string = "使用默认编码";
     cp_names[0].voice_id = -1;
     for (old_val = 1; old_val < NUM_CODEPAGES+1; old_val++)
     {
@@ -2516,12 +2617,12 @@ static bool lrc_lyrics_menu(void)
 
     while (!exit && !usb)
     {
-        switch (rb->do_menu(&menu, &selected, NULL, false))
+        switch (lrc_do_menu(&menu, &selected))
         {
             case LRC_MENU_ENCODING:
                 prefs.encoding++;
                 old_val = prefs.encoding;
-                usb = rb->set_option("Encoding", &prefs.encoding, RB_INT,
+                usb = rb->set_option("编码", &prefs.encoding, RB_INT,
                                      cp_names, NUM_CODEPAGES+1, NULL);
                 if (prefs.encoding != old_val)
                 {
@@ -2536,7 +2637,7 @@ static bool lrc_lyrics_menu(void)
                 break;
 #ifdef LRC_SUPPORT_ID3
             case LRC_MENU_READ_ID3:
-                usb = rb->set_bool("Read ID3 tag", &prefs.read_id3);
+                usb = lrc_bool("读取 ID3 标签", &prefs.read_id3);
                 break;
 #endif
             case LRC_MENU_LRC_DIR:
@@ -2575,15 +2676,15 @@ static const char* lrc_debug_data(int selected, void * data,
                             (int)lrc_buffer_size);
             break;
         case 3:
-            rb->snprintf(buffer, buffer_len, "line count: %d,%d",
+            rb->snprintf(buffer, buffer_len, "行数: %d,%d",
                             current.nlrcline, current.nlrcbrpos);
             break;
         case 4:
-            rb->snprintf(buffer, buffer_len, "loaded lrc? %s",
+            rb->snprintf(buffer, buffer_len, "已载入歌词? %s",
                             current.loaded_lrc?"yes":"no");
             break;
         case 5:
-            rb->snprintf(buffer, buffer_len, "too many lines? %s",
+            rb->snprintf(buffer, buffer_len, "行数过多? %s",
                             current.too_many_lines?"yes":"no");
             break;
         default:
@@ -2595,7 +2696,7 @@ static const char* lrc_debug_data(int selected, void * data,
 static bool lrc_debug_menu(void)
 {
     struct simplelist_info info;
-    rb->simplelist_info_init(&info, "Debug", 6, NULL);
+    rb->simplelist_info_init(&info, "调试信息", 6, NULL);
     info.scroll_all = true;
     info.get_name = lrc_debug_data;
     return rb->simplelist_show_list(&info);
@@ -2618,22 +2719,22 @@ static int lrc_menu(void)
         LRC_MENU_QUIT,
     };
 
-    MENUITEM_STRINGLIST(menu, "Lrcplayer", NULL,
-                        "Theme Settings",
-                        "Display Settings",
-                        "Lyrics Settings",
-                        "Playback Control",
+    MENUITEM_STRINGLIST(menu, "歌词播放器", NULL,
+                        "主题设置",
+                        "显示设置",
+                        "歌词设置",
+                        "播放控制",
 #ifdef LRC_DEBUG
-                        "Debug",
+                        "调试信息",
 #endif
-                        "Time Offset", "Timetag Editor",
-                        "Quit");
+                        "时间偏移", "时间标签编辑",
+                        "退出");
     int selected = 0, ret = LRC_GOTO_MENU;
     bool usb = false;
 
     while (ret == LRC_GOTO_MENU)
     {
-        switch (rb->do_menu(&menu, &selected, NULL, false))
+        switch (lrc_do_menu(&menu, &selected))
         {
             case LRC_MENU_THEME:
                 usb = lrc_theme_menu();
@@ -2655,7 +2756,7 @@ static int lrc_menu(void)
                 break;
 #endif
             case LRC_MENU_OFFSET:
-                usb = (lrc_set_time("Time Offset", "sec", &current.offset,
+                usb = (lrc_set_time("时间偏移", "秒", &current.offset,
                                     10, -60*1000, 60*1000,
                                     LST_SET_MSEC|LST_SET_SEC) == 1);
                 ret = LRC_GOTO_MAIN;
@@ -2839,7 +2940,7 @@ static int lrc_main(void)
     bool update_display_state = true;
 
     /* y offset of vp_lyrics */
-    int h = (prefs.display_title?font_ui_height:0)+
+    int h = (prefs.display_title?line_height:0)+
             (prefs.display_time?SYSFONT_HEIGHT*2:0);
 
 
@@ -2853,8 +2954,8 @@ static int lrc_main(void)
         vp_lyrics[i].height -= h;
         /* leave room for the lyric map strip at the bottom */
         if (prefs.show_map &&
-            vp_lyrics[i].height > LRC_MAP_HEIGHT + font_ui_height)
-            vp_lyrics[i].height -= LRC_MAP_HEIGHT;
+            vp_lyrics[i].height > prefs.map_height + line_height)
+            vp_lyrics[i].height -= prefs.map_height;
     }
 
 #ifdef HAVE_BACKLIGHT
@@ -2969,8 +3070,10 @@ enum plugin_status plugin_start(const void* parameter)
     /* initialize settings. */
     load_or_save_settings(false);
 
-    uifont = rb->screens[0]->getuifont();
+    lrc_cjk_font = rb_cjk_load();
+    uifont = (lrc_cjk_font >= 0) ? lrc_cjk_font : rb->screens[0]->getuifont();
     font_ui_height = rb->font_get(uifont)->height;
+    line_height = font_ui_height + prefs.line_spacing;
 
     lrc_buffer = rb->plugin_get_buffer(&lrc_buffer_size);
     lrc_buffer = ALIGN_UP(lrc_buffer, 4); /* 4 bytes aligned */
@@ -2997,7 +3100,8 @@ enum plugin_status plugin_start(const void* parameter)
         rb->strcpy(current.lrc_file, parameter);
         if (!rb->file_exists(current.lrc_file))
         {
-            rb->splash(HZ, "Specified file does not exist.");
+            rb->splash(HZ, "指定的歌词文件不存在");
+            rb_cjk_unload(lrc_cjk_font);
             return PLUGIN_ERROR;
         }
         ext = rb->strrchr(current.lrc_file, '.');
@@ -3009,7 +3113,8 @@ enum plugin_status plugin_start(const void* parameter)
         }
         if (current.type == NUM_TYPES)
         {
-            rb->splashf(HZ, "%s is not supported", ext);
+            rb->splashf(HZ, "不支持 %s 格式", ext);
+            rb_cjk_unload(lrc_cjk_font);
             return PLUGIN_ERROR;
         }
         current.found_lrc = true;
@@ -3035,5 +3140,6 @@ enum plugin_status plugin_start(const void* parameter)
     }
 
     load_or_save_settings(true);
+    rb_cjk_unload(lrc_cjk_font);
     return ret;
 }

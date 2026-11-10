@@ -118,13 +118,14 @@ struct layout {
     int grid_y;
     int cell_w;
     int cell_h;
-    int glyph;      /* glyph box side in pixels (8..16 in the grid) */
-    int labels;     /* non-zero when the romaji fits under each glyph */
+    int glyph;      /* glyph box side in pixels */
+    int rows;       /* rows that fit in the grid viewport */
 };
 
 static int view_mode = VIEW_HIRA;
 static int sel_row;
 static int sel_col;
+static int top_row;
 static int best_ever;
 
 static int quiz_active;
@@ -193,7 +194,6 @@ static void layout_init(struct layout *L, int view)
 {
     int w = 0;
     int h = 0;
-    int avail;
 
     rb->lcd_getstringsize((const unsigned char *)"Ag", &w, &h);
     if (h < 8)
@@ -205,22 +205,15 @@ static void layout_init(struct layout *L, int view)
     L->cell_w = LCD_WIDTH / GRID_COLS;
     if (L->cell_w < 8)
         L->cell_w = 8;
-    L->cell_h = (L->status_y - L->grid_y) / GRID_ROWS;
-    if (L->cell_h < 8)
-        L->cell_h = 8;
-    avail = L->cell_h - 1;
-    if (avail < 8)
-        avail = 8;
-    L->labels = 0;
-    if (view != VIEW_BOTH && avail - h >= 10 && L->cell_w >= 24)
-        L->labels = 1;
-    L->glyph = avail - (L->labels ? h : 0);
-    if (view == VIEW_BOTH)
-        L->glyph = avail / 2;
-    if (L->glyph < 8)
-        L->glyph = 8;
-    if (L->glyph > 16)
-        L->glyph = 16;
+    /* fixed, comfortable cells; the grid scrolls instead of shrinking */
+    L->glyph = (view == VIEW_BOTH) ? 20 : 24;
+    L->cell_h = (view == VIEW_BOTH) ? (L->glyph * 2 + 4)
+                                    : (L->glyph + 4);
+    L->rows = (L->status_y - L->grid_y) / L->cell_h;
+    if (L->rows < 1)
+        L->rows = 1;
+    if (L->rows > GRID_ROWS)
+        L->rows = GRID_ROWS;
 }
 
 /* Draw one kana from the loaded GNU Unifont, scaled to fit a square box.
@@ -232,7 +225,7 @@ static void draw_kana(int x, int y, int size, int script, int idx)
     struct font *pf = rb->font_get(kana_font);
     const unsigned char *bits;
     ucschar_t cp = 0;
-    int sw, sh, tx, ty, dm;
+    int sw, sh, tx, ty;
 
     if (size > KANA_MAX_PX)
         size = KANA_MAX_PX;
@@ -255,10 +248,7 @@ static void draw_kana(int x, int y, int size, int script, int idx)
                 scaled[(ty / 8) * size + tx] |= (unsigned char)(1 << (ty & 7));
         }
     }
-    dm = rb->lcd_get_drawmode();
-    rb->lcd_set_drawmode(DRMODE_FG);
     rb->lcd_mono_bitmap_part(scaled, 0, 0, size, x, y, size, size);
-    rb->lcd_set_drawmode(dm);
 }
 
 static const char *view_name(int view)
@@ -308,12 +298,8 @@ static void draw_cell(const struct layout *L, int x, int y, int idx, int view)
     int content;
     int top;
     int gx;
-    int w = 0;
-    int h = 0;
 
     content = (view == VIEW_BOTH) ? (L->glyph * 2) : L->glyph;
-    if (L->labels)
-        content += L->ch;
     top = y + (L->cell_h - content) / 2;
     if (top < y)
         top = y;
@@ -325,12 +311,6 @@ static void draw_cell(const struct layout *L, int x, int y, int idx, int view)
     } else {
         draw_kana(gx, top, L->glyph,
                   (view == VIEW_KATA) ? SCRIPT_KATA : SCRIPT_HIRA, idx);
-        if (L->labels) {
-            const unsigned char *r = (const unsigned char *)romaji[idx];
-            rb->lcd_getstringsize(r, &w, &h);
-            if (w <= L->cell_w - 2)
-                rb->lcd_putsxy(x + (L->cell_w - w) / 2, top + L->glyph, r);
-        }
     }
 }
 
@@ -357,7 +337,8 @@ static void draw_ref_status(const struct layout *L)
 static void draw_reference(void)
 {
     struct layout L;
-    int r, c, idx, x, y;
+    int rr, r, c, idx, x, y;
+    int max_top;
 
     rb->lcd_set_drawmode(DRMODE_SOLID);
     setup_colors();
@@ -366,22 +347,40 @@ static void draw_reference(void)
     draw_header(0);
 
     rb->lcd_hline(0, LCD_WIDTH - 1, L.header_h - 1);
-    for (r = 0; r < GRID_ROWS; r++) {
+
+    /* keep the cursor inside the scrolled window */
+    max_top = GRID_ROWS - L.rows;
+    if (max_top < 0)
+        max_top = 0;
+    if (sel_row < top_row)
+        top_row = sel_row;
+    if (sel_row >= top_row + L.rows)
+        top_row = sel_row - L.rows + 1;
+    if (top_row > max_top)
+        top_row = max_top;
+    if (top_row < 0)
+        top_row = 0;
+
+    for (rr = 0; rr < L.rows && top_row + rr < GRID_ROWS; rr++) {
+        r = top_row + rr;
         for (c = 0; c < GRID_COLS; c++) {
             idx = (int)grid_map[r][c];
             if (idx < 0)
                 continue;
             x = c * L.cell_w;
-            y = L.grid_y + r * L.cell_h;
+            y = L.grid_y + rr * L.cell_h;
             if (r == sel_row && c == sel_col) {
                 rb->lcd_set_drawmode(DRMODE_COMPLEMENT);
-                rb->lcd_fillrect(x + 1, y, L.cell_w - 2, L.cell_h);
+                rb->lcd_fillrect(x + 1, y + 1,
+                                 L.cell_w - 2, L.cell_h - 2);
+                draw_cell(&L, x, y, idx, view_mode);
                 rb->lcd_set_drawmode(DRMODE_SOLID);
+            } else {
+                draw_cell(&L, x, y, idx, view_mode);
             }
-            draw_cell(&L, x, y, idx, view_mode);
         }
     }
-    rb->lcd_drawrect(0, L.grid_y, LCD_WIDTH, GRID_ROWS * L.cell_h);
+    rb->lcd_drawrect(0, L.grid_y, LCD_WIDTH, L.rows * L.cell_h);
     rb->lcd_hline(0, LCD_WIDTH - 1, L.status_y - 1);
     draw_ref_status(&L);
     rb->lcd_update();
@@ -448,16 +447,16 @@ static void draw_quiz(void)
         for (i = 0; i < 4; i++) {
             x = 4 + (i % 2) * (LCD_WIDTH / 2);
             y = area_y + (i / 2) * (chh + 4);
+            rb->lcd_drawrect(x, y, cw, chh);
             if (i == q_slot) {
                 rb->lcd_set_drawmode(DRMODE_COMPLEMENT);
-                rb->lcd_fillrect(x, y, cw, chh);
-                rb->lcd_set_drawmode(DRMODE_SOLID);
+                rb->lcd_fillrect(x + 1, y + 1, cw - 2, chh - 2);
             }
-            rb->lcd_drawrect(x, y, cw, chh);
             rb->snprintf(buf, sizeof(buf), "%s", romaji[q_choices[i]]);
             rb->lcd_getstringsize((const unsigned char *)buf, &w, &h);
             rb->lcd_putsxy(x + (cw - w) / 2, y + (chh - h) / 2,
                            (const unsigned char *)buf);
+            rb->lcd_set_drawmode(DRMODE_SOLID);
         }
     } else {
         rb->snprintf(buf, sizeof(buf), "= %s", romaji[q_kana]);
@@ -677,12 +676,12 @@ static void ref_handle(int act)
 #ifdef HAVE_SCROLLWHEEL
     case PLA_SCROLL_FWD:
     case PLA_SCROLL_FWD_REPEAT:
-        ref_move(0, 1);
+        ref_move(1, 0);
         draw_reference();
         break;
     case PLA_SCROLL_BACK:
     case PLA_SCROLL_BACK_REPEAT:
-        ref_move(0, -1);
+        ref_move(-1, 0);
         draw_reference();
         break;
 #endif

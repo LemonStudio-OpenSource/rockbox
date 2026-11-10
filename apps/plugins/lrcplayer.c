@@ -2480,7 +2480,7 @@ static bool lrc_theme_menu(void)
                 break;
             case LRC_MENU_MAP_HEIGHT:
                 usb = rb->set_int((const unsigned char *)"地图高度", "像素",
-                                  -1, &prefs.map_height,
+                                  -1, &prefs.map_height, NULL,
                                   1, 2, 8, NULL);
                 break;
 #ifdef HAVE_LCD_COLOR
@@ -2559,7 +2559,7 @@ static bool lrc_display_menu(void)
                 break;
             case LRC_MENU_SPACING:
                 usb = rb->set_int((const unsigned char *)"行间距", "像素",
-                                  -1, &prefs.line_spacing,
+                                  -1, &prefs.line_spacing, NULL,
                                   1, 0, 8, NULL);
                 line_height = font_ui_height + prefs.line_spacing;
                 break;

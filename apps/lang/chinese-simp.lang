@@ -17236,3 +17236,20 @@
     recording_remote: "线控录音界面皮肤"
   </voice>
 </phrase>
+<phrase>
+  id: LANG_DYNAMIC_COLORS
+  desc: in the theme menu
+  user: core
+  <source>
+    *: none
+    lcd_color: "Dynamic Colors"
+  </source>
+  <dest>
+    *: none
+    lcd_color: "动态取色"
+  </dest>
+  <voice>
+    *: none
+    lcd_color: "动态取色"
+  </voice>
+</phrase>

@@ -4328,8 +4328,15 @@ static bool context_menu_ready(void)
     rb->lcd_set_foreground(N_BRIGHT(0));
     rb->lcd_set_background(N_BRIGHT(255));
 #elif defined (HAVE_LCD_COLOR)
+#ifdef HAVE_ALBUMART
+    rb->lcd_set_background(rb->dynamic_colors_resolve(
+        rb->global_settings->bg_color));
+    rb->lcd_set_foreground(rb->dynamic_colors_resolve(
+        rb->global_settings->fg_color));
+#else
     rb->lcd_set_background(rb->global_settings->bg_color);
     rb->lcd_set_foreground(rb->global_settings->fg_color);
+#endif
 #endif
 #endif
     insert_whole_album = (pf_state != pf_show_tracks) || show_tracks_while_browsing;
@@ -4803,6 +4810,13 @@ static int pictureflow_main(void)
 
         /* Initial rendering */
         instant_update = false;
+
+#if defined(HAVE_LCD_COLOR) && defined(HAVE_ALBUMART)
+        rb->lcd_set_background(rb->dynamic_colors_resolve(
+            rb->global_settings->bg_color));
+        rb->lcd_set_foreground(rb->dynamic_colors_resolve(
+            rb->global_settings->fg_color));
+#endif
 
         update_scroll_lines();
 

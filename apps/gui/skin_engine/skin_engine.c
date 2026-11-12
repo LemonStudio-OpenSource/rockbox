@@ -38,6 +38,7 @@
 #include "skin_buffer.h"
 #include "statusbar-skinned.h"
 #include "wps_internals.h"
+#include "skin_albumart_color.h"
 
 #define FAILSAFENAME "rockbox_failsafe"
 
@@ -151,6 +152,7 @@ void gui_sync_skin_init(void)
             skins[j][i].gui_wps.display = &screens[i];
         }
     }
+    dynamic_colors_init();
 }
 
 static void skin_reset_buffers(int item, int screen)
@@ -169,6 +171,9 @@ static void skin_reset_buffers(int item, int screen)
 void settings_apply_skins(void)
 {
     int i;
+
+    /* Save theme colors before re-parsing skins */
+    dynamic_colors_save_theme();
 
     if (audio_status() & AUDIO_STATUS_PLAY)
         audio_stop();

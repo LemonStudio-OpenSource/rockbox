@@ -17285,3 +17285,20 @@
     recording_remote: "remote recording screen skin"
   </voice>
 </phrase>
+<phrase>
+  id: LANG_DYNAMIC_COLORS
+  desc: in the theme menu
+  user: core
+  <source>
+    *: none
+    lcd_color: "Dynamic Colors"
+  </source>
+  <dest>
+    *: none
+    lcd_color: "Dynamic Colors"
+  </dest>
+  <voice>
+    *: none
+    lcd_color: "Dynamic Colors"
+  </voice>
+</phrase>

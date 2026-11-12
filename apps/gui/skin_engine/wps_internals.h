@@ -205,11 +205,18 @@ struct skin_viewport {
     bool fgbg_changed;
 #ifdef HAVE_LCD_COLOR
     struct gradient_config start_gradient;
+#ifdef HAVE_ALBUMART
+    unsigned int dc_orig_fg; /* original parsed fg for dynamic colors */
+    unsigned int dc_orig_bg; /* original parsed bg for dynamic colors */
+#endif
 #endif
 #endif
 };
 struct viewport_colour {
     unsigned colour;
+#if (LCD_DEPTH > 1) || (defined(HAVE_REMOTE_LCD) && (LCD_REMOTE_DEPTH > 1))
+    bool is_default; /* true if parsed from `-` (theme default) */
+#endif
 };
 
 #ifdef HAVE_TOUCHSCREEN

@@ -743,20 +743,36 @@ static int parse_viewportcolour(struct skin_element *element,
             colour->colour = fg_color;
         else
             colour->colour = bg_color;
+#if (LCD_DEPTH > 1) || (defined(HAVE_REMOTE_LCD) && (LCD_REMOTE_DEPTH > 1))
+        colour->is_default = true;
+#endif
     }
     else
     {
         if (!parse_color(curr_screen, SKINOFFSETTOPTR(skin_buffer, param->data.text),
                     &colour->colour))
             return -1;
+#if (LCD_DEPTH > 1) || (defined(HAVE_REMOTE_LCD) && (LCD_REMOTE_DEPTH > 1))
+        colour->is_default = false;
+#endif
     }
     token->value.data = PTRTOSKINOFFSET(skin_buffer, colour);
     if (element->line == curr_viewport_element->line)
     {
         if (token->type == SKIN_TOKEN_VIEWPORT_FGCOLOUR)
+        {
             curr_vp->vp.fg_pattern = colour->colour;
+#if defined(HAVE_LCD_COLOR) && defined(HAVE_ALBUMART)
+            curr_vp->dc_orig_fg = colour->colour;
+#endif
+        }
         else
+        {
             curr_vp->vp.bg_pattern = colour->colour;
+#if defined(HAVE_LCD_COLOR) && defined(HAVE_ALBUMART)
+            curr_vp->dc_orig_bg = colour->colour;
+#endif
+        }
     }
     return 0;
 }
@@ -2314,6 +2330,10 @@ static int convert_viewport(struct wps_data *data, struct skin_element* element)
     skin_vp->start_gradient.start = global_settings.lss_color;
     skin_vp->start_gradient.end = global_settings.lse_color;
     skin_vp->start_gradient.text = global_settings.lst_color;
+#ifdef HAVE_ALBUMART
+    skin_vp->dc_orig_fg = skin_vp->vp.fg_pattern;
+    skin_vp->dc_orig_bg = skin_vp->vp.bg_pattern;
+#endif
 #endif
 
 
